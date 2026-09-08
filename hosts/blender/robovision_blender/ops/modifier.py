@@ -78,15 +78,23 @@ def apply(params, _runtime):
     if obj.library is not None:
         raise HostError("UNSUPPORTED", "cannot apply modifiers to a linked-library object")
 
+    # Applying removes the Modifier RNA object from the stack; retain the
+    # externally meaningful identity before calling Blender's operator.
+    modifier_name = modifier.name
+    modifier_type = modifier.type
     with active_object_override(obj):
         obj.modifiers.active = modifier
         if not bpy.ops.object.modifier_apply.poll():
             raise HostError("INVALID_CONTEXT", "modifier_apply is not available for the target object/context")
-        result = bpy.ops.object.modifier_apply(modifier=modifier.name, report=False, single_user=bool(params.get("single_user", False)))
+        result = bpy.ops.object.modifier_apply(modifier=modifier_name, report=False, single_user=bool(params.get("single_user", False)))
         if "FINISHED" not in result:
             raise HostError("HOST_EXCEPTION", "Blender did not apply the modifier")
 
-    payload = {"object": object_id(obj), "applied": modifier.name}
+    payload = {
+        "object": object_id(obj),
+        "applied": modifier_name,
+        "applied_type": modifier_type,
+    }
     if obj.type == "MESH":
         payload["mesh_revision"] = bump_mesh_revision(obj)
     return payload
