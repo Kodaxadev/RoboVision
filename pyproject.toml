@@ -11,6 +11,10 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+mcp = ["mcp>=2,<3", "Pillow>=10"]
+
+[project.scripts]
+robovision-mcp = "robovision.mcp_server:main"
 
 [tool.setuptools.packages.find]
 include = ["robovision*"]
