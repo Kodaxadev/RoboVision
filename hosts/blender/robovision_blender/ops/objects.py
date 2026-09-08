@@ -18,8 +18,22 @@ def _vec3(value, name: str):
         raise HostError("INVALID_PARAMS", f"{name} must contain numbers") from exc
 
 
+def _sync_transform_state() -> None:
+    """Force Blender to publish derived transform state before inspection.
+
+    Assigning location/rotation/scale dirties the dependency graph, while
+    Object.matrix_world can still reflect the previous evaluated transform until
+    the view layer is updated. RoboVision responses are contracts, so local and
+    world transform fields must describe the same editor state.
+    """
+    view_layer = getattr(bpy.context, "view_layer", None)
+    if view_layer is not None:
+        view_layer.update()
+
+
 def inspect(params, _runtime):
     obj = resolve_object(params.get("object"))
+    _sync_transform_state()
     return object_snapshot(obj, deep=bool(params.get("deep", True)))
 
 
@@ -66,6 +80,7 @@ def create(params, _runtime):
         obj.rotation_euler = _vec3(params["rotation"], "rotation")
     if "scale" in params:
         obj.scale = _vec3(params["scale"], "scale")
+    _sync_transform_state()
     return object_snapshot(obj, deep=True)
 
 
@@ -89,6 +104,7 @@ def duplicate(params, _runtime):
     target_collection = source.users_collection[0] if source.users_collection else (bpy.context.collection or bpy.context.scene.collection)
     target_collection.objects.link(clone)
     object_id(clone)
+    _sync_transform_state()
     return object_snapshot(clone, deep=True)
 
 
@@ -106,6 +122,7 @@ def transform(params, _runtime):
             obj.rotation_euler = _vec3(params["rotation"], "rotation")
         if "scale" in params:
             obj.scale = _vec3(params["scale"], "scale")
+    _sync_transform_state()
     return object_snapshot(obj, deep=False)
 
 
@@ -120,6 +137,7 @@ def parent(params, _runtime):
     child.parent = new_parent
     if preserve_world:
         child.matrix_world = world
+    _sync_transform_state()
     return object_snapshot(child, deep=False)
 
 
