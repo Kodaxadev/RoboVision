@@ -81,6 +81,8 @@ def main() -> None:
         "mesh.inspect",
         "mesh.validate",
         "mesh.extrude_faces",
+        "modifier.add",
+        "modifier.apply",
         "viewport.capture",
         "transaction.begin",
         "transaction.rollback",
@@ -123,7 +125,31 @@ def main() -> None:
         },
         if_revision=runtime.revision,
     )
-    expect(extruded["result"]["mesh_revision"] == mesh_revision + 1, "topology revision did not advance after extrusion")
+    extruded_revision = extruded["result"]["mesh_revision"]
+    expect(extruded_revision == mesh_revision + 1, "topology revision did not advance after extrusion")
+
+    added_modifier = call(
+        "modifier.add",
+        {
+            "object": object_ref,
+            "type": "BEVEL",
+            "name": "RV_GateBevel",
+            "properties": {"width": 0.04, "segments": 2},
+        },
+        if_revision=runtime.revision,
+    )
+    expect(added_modifier["result"]["modifier"]["name"] == "RV_GateBevel", "modifier was not created")
+
+    applied_modifier = call(
+        "modifier.apply",
+        {"object": object_ref, "modifier": "RV_GateBevel"},
+        if_revision=runtime.revision,
+    )
+    expect(applied_modifier["result"]["mesh_revision"] == extruded_revision + 1, "applying topology modifier did not advance mesh revision")
+
+    post_edit_validation = call("mesh.validate", {"object": object_ref})
+    expect(post_edit_validation["result"]["valid"] is True, "edited mesh failed validation")
+    expect(post_edit_validation["result"]["counts"]["vertices"] > 8, "topology edits did not produce additional vertices")
 
     stale = call(
         "mesh.bevel",
