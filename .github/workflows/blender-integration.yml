@@ -23,7 +23,7 @@ concurrency:
 jobs:
   blender-5-2-lts:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       BLENDER_VERSION: "5.2.1"
       BLENDER_SERIES: "5.2"
@@ -85,11 +85,22 @@ jobs:
             --python-exit-code 1 \
             --python tests/blender/gate1.py
 
-      - name: Upload Gate 1 evidence
+      - name: Run RoboVision Gate 2 perception in interactive Blender
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-gate2
+          xvfb-run -a -s "-screen 0 1920x1080x24" \
+            "${BLENDER_DIR}/blender" \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/gate2.py
+
+      - name: Upload Blender evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: blender-5.2.1-gate1-evidence
-          path: artifacts/blender-gate1/
+          name: blender-5.2.1-robovision-evidence
+          path: artifacts/blender-gate*/
           if-no-files-found: warn
           retention-days: 14
