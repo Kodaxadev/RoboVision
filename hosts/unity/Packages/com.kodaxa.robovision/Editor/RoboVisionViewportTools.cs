@@ -12,7 +12,7 @@ namespace Kodaxa.RoboVision.Editor
         public static void Register(RoboVisionHost host)
         {
             host.AddTool("viewport.inspect", p => Inspect(host), requiresUi: true, stability: "beta");
-            host.AddTool("viewport.focus", p => Focus(host, p), mutating: true, requiresUi: true, stability: "alpha");
+            host.AddTool("viewport.focus", p => Focus(host, p), requiresUi: true, stability: "alpha");
             host.AddTool("viewport.capture", p => Capture(host, p), evidence: true, requiresUi: true, stability: "alpha");
         }
 
