@@ -16,3 +16,4 @@ artifacts/
 .unity-compile-refs/
 .unity-testbed/
 artifacts/
+.unity-restart/

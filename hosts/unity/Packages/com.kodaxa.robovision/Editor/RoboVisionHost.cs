@@ -162,6 +162,15 @@ namespace Kodaxa.RoboVision.Editor
             return modifications;
         }
 
+        /// <summary>Service the socket once from the caller's thread.</summary>
+        /// <remarks>
+        /// Normally EditorApplication.update drives this. A harness running under
+        /// -executeMethod holds the editor loop for the whole call, so nothing
+        /// would ever answer an external client while it waits. Such a driver
+        /// pumps explicitly rather than sleeping and hoping.
+        /// </remarks>
+        internal void ServiceTransportOnce() => Update();
+
         public void MarkDirty() => _dirty = true;
 
         private void RefreshDirtyState()
