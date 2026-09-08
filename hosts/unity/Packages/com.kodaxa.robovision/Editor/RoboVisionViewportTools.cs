@@ -52,7 +52,8 @@ namespace Kodaxa.RoboVision.Editor
                 : Path.GetFullPath(requestedPath);
             if (!String.Equals(Path.GetExtension(path), ".png", StringComparison.OrdinalIgnoreCase))
                 throw new RoboVisionException("INVALID_PARAMS", "viewport capture path must end in .png");
-            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            var directory = Path.GetDirectoryName(path);
+            if (!String.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
 
             var cameraObject = new GameObject("RoboVisionCaptureCamera") { hideFlags = HideFlags.HideAndDontSave };
             var camera = cameraObject.AddComponent<Camera>();
@@ -78,7 +79,6 @@ namespace Kodaxa.RoboVision.Editor
             finally
             {
                 RenderTexture.active = oldActive;
-                renderTexture.Release();
                 RenderTexture.ReleaseTemporary(renderTexture);
                 UnityEngine.Object.DestroyImmediate(texture);
                 UnityEngine.Object.DestroyImmediate(cameraObject);
@@ -93,7 +93,7 @@ namespace Kodaxa.RoboVision.Editor
             metadata["capture_backend"] = "camera_render";
             metadata["fidelity_note"] = GraphicsSettings.currentRenderPipeline == null
                 ? "Built-in pipeline camera render from a copy of the SceneView camera."
-                : "SRP camera render from a copy of the SceneView camera; pipeline-specific post-processing may differ from the visible SceneView. Use a future SRP render-request backend when exact SRP output is required.";
+                : "SRP camera render from a copy of the SceneView camera; pipeline-specific post-processing may differ from the visible SceneView. Use an SRP render-request backend when exact SRP output is required.";
 
             return new JObject
             {
