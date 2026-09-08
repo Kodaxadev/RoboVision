@@ -1,0 +1,87 @@
+name: unity-compile
+
+on:
+  push:
+    paths:
+      - "hosts/unity/**"
+      - "tools/unity-compile-check.sh"
+      - ".github/workflows/unity-compile.yml"
+  pull_request:
+    paths:
+      - "hosts/unity/**"
+      - "tools/unity-compile-check.sh"
+      - ".github/workflows/unity-compile.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unity-compile-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Compile against the package's declared minimum Unity 6000.0. The current
+  # 6000.0 LTS patch is pinned so API regressions are deterministic.
+  UNITY_VERSION: "6000.0.83f1"
+  UNITY_IMAGE: "unityci/editor:ubuntu-6000.0.83f1-base-3"
+  NEWTONSOFT_VERSION: "3.0.2"
+
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch declared Newtonsoft.Json package reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .unity-compile-refs /tmp/robovision-newtonsoft
+          curl --fail --location --retry 4 --retry-delay 2 \
+            "https://packages.unity.com/com.unity.nuget.newtonsoft-json/-/com.unity.nuget.newtonsoft-json-${NEWTONSOFT_VERSION}.tgz" \
+            --output /tmp/robovision-newtonsoft.tgz
+          tar -xzf /tmp/robovision-newtonsoft.tgz \
+            -C /tmp/robovision-newtonsoft \
+            package/Runtime/Newtonsoft.Json.dll
+          cp /tmp/robovision-newtonsoft/package/Runtime/Newtonsoft.Json.dll .unity-compile-refs/
+
+      - name: Verify public Unity CI image exists
+        shell: bash
+        run: docker manifest inspect "${UNITY_IMAGE}" >/dev/null
+
+      - name: Compile RoboVision against Unity 6000.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            -e UNITY_DATA=/opt/unity/Editor/Data \
+            -e REPO=/repo \
+            -e EXTRA_REFS=/repo/.unity-compile-refs \
+            "${UNITY_IMAGE}" \
+            bash /repo/tools/unity-compile-check.sh
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            {
+              echo "## Unity semantic compile passed"
+              echo
+              echo "RoboVision compiled against Unity ${UNITY_VERSION}, the package's 6000.0 API floor."
+              echo "No Unity Editor process or license was used."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## Unity semantic compile failed"
+              echo
+              echo "The Unity editor package did not compile against the declared 6000.0 API floor."
+              echo "See the failing step for the exact compiler or reference-image error."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
