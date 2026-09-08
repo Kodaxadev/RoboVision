@@ -112,7 +112,7 @@ STATUS=$?
 set -e
 
 echo "  unity exit: $STATUS"
-if [ -f "$RESULTS" ]; then
+if [ -s "$RESULTS" ]; then
   python - "$RESULTS" <<'PY'
 import sys, xml.etree.ElementTree as ET
 root = ET.parse(sys.argv[1]).getroot()
@@ -127,8 +127,14 @@ PY
 else
   echo "  no test results were produced"
   if [ -f "$LOG" ]; then
+    if grep -q "Native Crash Reporting" "$LOG"; then
+      echo "  the editor crashed before writing results"
+      grep -nE "The paging file is too small|Couldn.t launch process|OutOfMemory" "$LOG" | head -n 3 | sed 's/^/    /'
+    fi
+    echo "  --- compile errors ---"
+    grep -E "error CS[0-9]+" "$LOG" | sort -u | head -n 20 | sed 's/^/    /' || true
     echo "  --- editor log tail ---"
-    tail -n 40 "$LOG" | sed 's/^/    /'
+    grep -vE "SymType|SymGetSym|^0x|[.]dll:" "$LOG" | tail -n 25 | sed 's/^/    /'
   fi
 fi
 
