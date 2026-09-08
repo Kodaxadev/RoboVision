@@ -25,7 +25,9 @@ namespace Kodaxa.RoboVision.Editor
             return new JObject
             {
                 ["object"] = IdFor(go),
-                ["components"] = new JArray(go.GetComponents<Component>().Where(component => component != null).Select(ComponentDescriptor))
+                ["components"] = new JArray(go.GetComponents<Component>()
+                    .Where(component => component != null)
+                    .Select(ComponentDescriptor))
             };
         }
 
@@ -33,12 +35,12 @@ namespace Kodaxa.RoboVision.Editor
         {
             var go = RoboVisionSceneTools.ResolveGameObject(parameters.Value<string>("object"));
             var requested = parameters.Value<string>("type");
-            if (String.IsNullOrWhiteSpace(requested)) throw new RoboVisionException("INVALID_PARAMS", "type is required");
+            if (String.IsNullOrWhiteSpace(requested))
+                throw new RoboVisionException("INVALID_PARAMS", "type is required");
             var type = ResolveComponentType(requested);
             try
             {
-                var component = Undo.AddComponent(go, type);
-                return ComponentDescriptor(component);
+                return ComponentDescriptor(Undo.AddComponent(go, type));
             }
             catch (Exception ex)
             {
@@ -49,10 +51,19 @@ namespace Kodaxa.RoboVision.Editor
         private static JToken RemoveComponent(JObject parameters)
         {
             var component = ResolveObject(parameters.Value<string>("component")) as Component;
-            if (component == null) throw new RoboVisionException("INVALID_PARAMS", "component must resolve to a Component");
-            if (component is Transform) throw new RoboVisionException("UNSUPPORTED", "Transform cannot be removed");
+            if (component == null)
+                throw new RoboVisionException("INVALID_PARAMS", "component must resolve to a Component");
+            if (component is Transform)
+                throw new RoboVisionException("UNSUPPORTED", "Transform cannot be removed");
             var descriptor = ComponentDescriptor(component);
-            Undo.DestroyObjectImmediate(component);
+            try
+            {
+                Undo.DestroyObjectImmediate(component);
+            }
+            catch (Exception ex)
+            {
+                throw new RoboVisionException("INVALID_CONTEXT", "Unity could not remove component: " + ex.Message);
+            }
             return new JObject { ["removed"] = descriptor };
         }
 
@@ -62,94 +73,116 @@ namespace Kodaxa.RoboVision.Editor
             var includeHidden = parameters.Value<bool?>("include_hidden") ?? false;
             var offset = Math.Max(0, parameters.Value<int?>("offset") ?? 0);
             var limit = Math.Max(1, Math.Min(2000, parameters.Value<int?>("limit") ?? 500));
-            var so = new SerializedObject(target);
-            so.UpdateIfRequiredOrScript();
-            var iterator = so.GetIterator();
-            var all = new List<JObject>();
-            var enterChildren = true;
-            while (includeHidden ? iterator.Next(enterChildren) : iterator.NextVisible(enterChildren))
-            {
-                enterChildren = false;
-                all.Add(PropertyDescriptor(iterator.Copy(), true));
-            }
+            var properties = Enumerate(target, includeHidden);
             return new JObject
             {
-                ["target"] = IdFor(target), ["type"] = target.GetType().FullName,
-                ["offset"] = offset, ["limit"] = limit, ["total"] = all.Count,
-                ["properties"] = new JArray(all.Skip(offset).Take(limit)),
-                ["has_more"] = offset + limit < all.Count
+                ["target"] = IdFor(target),
+                ["type"] = target.GetType().FullName,
+                ["offset"] = offset,
+                ["limit"] = limit,
+                ["total"] = properties.Count,
+                ["properties"] = new JArray(properties.Skip(offset).Take(limit)),
+                ["has_more"] = offset + limit < properties.Count
             };
         }
 
         private static JToken Get(JObject parameters)
         {
             var target = ResolveObject(parameters.Value<string>("target"));
-            var path = parameters.Value<string>("path");
-            if (String.IsNullOrWhiteSpace(path)) throw new RoboVisionException("INVALID_PARAMS", "path is required");
-            var so = new SerializedObject(target);
-            so.UpdateIfRequiredOrScript();
-            var property = so.FindProperty(path);
-            if (property == null) throw new RoboVisionException("NOT_FOUND", "serialized property not found: " + path);
-            return PropertyDescriptor(property, true);
+            var path = RequiredString(parameters, "path");
+            var serialized = new SerializedObject(target);
+            serialized.UpdateIfRequiredOrScript();
+            var property = serialized.FindProperty(path);
+            if (property == null)
+                throw new RoboVisionException("NOT_FOUND", "serialized property not found: " + path);
+            return PropertyDescriptor(property);
         }
 
         private static JToken Set(JObject parameters)
         {
             var target = ResolveObject(parameters.Value<string>("target"));
-            var path = parameters.Value<string>("path");
-            if (String.IsNullOrWhiteSpace(path)) throw new RoboVisionException("INVALID_PARAMS", "path is required");
-            if (path == "m_Script") throw new RoboVisionException("UNSUPPORTED", "RoboVision does not replace MonoBehaviour script references through serialized.set");
-            if (!parameters.TryGetValue("value", out var value)) throw new RoboVisionException("INVALID_PARAMS", "value is required");
+            var path = RequiredString(parameters, "path");
+            if (path == "m_Script")
+                throw new RoboVisionException("UNSUPPORTED", "serialized.set does not replace MonoBehaviour script references");
+            if (!parameters.TryGetValue("value", out var value))
+                throw new RoboVisionException("INVALID_PARAMS", "value is required");
 
-            var so = new SerializedObject(target);
-            so.UpdateIfRequiredOrScript();
-            var property = so.FindProperty(path);
-            if (property == null) throw new RoboVisionException("NOT_FOUND", "serialized property not found: " + path);
+            var serialized = new SerializedObject(target);
+            serialized.UpdateIfRequiredOrScript();
+            var property = serialized.FindProperty(path);
+            if (property == null)
+                throw new RoboVisionException("NOT_FOUND", "serialized property not found: " + path);
             WriteProperty(property, value);
-            if (!so.ApplyModifiedProperties())
-                throw new RoboVisionException("HOST_EXCEPTION", "Unity reported no serialized modification for " + path);
-            so.UpdateIfRequiredOrScript();
-            property = so.FindProperty(path);
-            return PropertyDescriptor(property, true);
+            var changed = serialized.ApplyModifiedProperties();
+            serialized.UpdateIfRequiredOrScript();
+            property = serialized.FindProperty(path);
+            return new JObject { ["changed"] = changed, ["property"] = PropertyDescriptor(property) };
+        }
+
+        private static List<JObject> Enumerate(UnityEngine.Object target, bool includeHidden)
+        {
+            var serialized = new SerializedObject(target);
+            serialized.UpdateIfRequiredOrScript();
+            var iterator = serialized.GetIterator();
+            var result = new List<JObject>();
+            var enterChildren = true;
+            while (includeHidden ? iterator.Next(enterChildren) : iterator.NextVisible(enterChildren))
+            {
+                enterChildren = false;
+                result.Add(PropertyDescriptor(iterator.Copy()));
+            }
+            return result;
         }
 
         private static JObject ComponentDescriptor(Component component)
         {
             return new JObject
             {
-                ["id"] = IdFor(component), ["type"] = component.GetType().FullName,
-                ["game_object"] = IdFor(component.gameObject), ["name"] = component.name,
-                ["enabled"] = component is Behaviour behaviour ? (JToken)behaviour.enabled : null
+                ["id"] = IdFor(component),
+                ["type"] = component.GetType().FullName,
+                ["game_object"] = IdFor(component.gameObject),
+                ["name"] = component.name,
+                ["enabled"] = component is Behaviour behaviour ? (JToken)behaviour.enabled : JValue.CreateNull()
             };
         }
 
         private static Type ResolveComponentType(string requested)
         {
             var matches = TypeCache.GetTypesDerivedFrom<Component>()
-                .Where(type => !type.IsAbstract && (String.Equals(type.FullName, requested, StringComparison.Ordinal) || String.Equals(type.Name, requested, StringComparison.Ordinal)))
+                .Where(type => !type.IsAbstract &&
+                    (String.Equals(type.FullName, requested, StringComparison.Ordinal) ||
+                     String.Equals(type.Name, requested, StringComparison.Ordinal)))
                 .ToArray();
-            if (matches.Length == 0) throw new RoboVisionException("NOT_FOUND", "component type not found: " + requested);
+            if (matches.Length == 0)
+                throw new RoboVisionException("NOT_FOUND", "component type not found: " + requested);
             if (matches.Length > 1)
-                throw new RoboVisionException("INVALID_PARAMS", "component type name is ambiguous; use full name",
+                throw new RoboVisionException(
+                    "INVALID_PARAMS",
+                    "component type name is ambiguous; use the full type name",
                     data: new JArray(matches.Select(type => type.FullName).OrderBy(name => name, StringComparer.Ordinal)));
             return matches[0];
         }
 
         private static UnityEngine.Object ResolveObject(string reference)
         {
-            if (String.IsNullOrWhiteSpace(reference)) throw new RoboVisionException("INVALID_PARAMS", "target reference is required");
+            if (String.IsNullOrWhiteSpace(reference))
+                throw new RoboVisionException("INVALID_PARAMS", "target reference is required");
             if (reference.StartsWith("unity:GlobalObjectId_", StringComparison.Ordinal))
             {
                 var raw = reference.Substring("unity:".Length);
-                if (!GlobalObjectId.TryParse(raw, out var gid)) throw new RoboVisionException("INVALID_PARAMS", "invalid GlobalObjectId");
+                if (!GlobalObjectId.TryParse(raw, out var gid))
+                    throw new RoboVisionException("INVALID_PARAMS", "invalid GlobalObjectId");
                 var resolved = GlobalObjectId.GlobalObjectIdentifierToObjectSlow(gid);
-                if (resolved == null) throw new RoboVisionException("NOT_FOUND", "Unity object no longer resolves: " + reference);
+                if (resolved == null)
+                    throw new RoboVisionException("NOT_FOUND", "Unity object no longer resolves: " + reference);
                 return resolved;
             }
-            if (reference.StartsWith("unity:instance:", StringComparison.Ordinal) && Int32.TryParse(reference.Substring("unity:instance:".Length), out var instanceId))
+            if (reference.StartsWith("unity:instance:", StringComparison.Ordinal) &&
+                Int32.TryParse(reference.Substring("unity:instance:".Length), out var instanceId))
             {
                 var resolved = EditorUtility.InstanceIDToObject(instanceId);
-                if (resolved == null) throw new RoboVisionException("NOT_FOUND", "Unity instance no longer resolves: " + reference);
+                if (resolved == null)
+                    throw new RoboVisionException("NOT_FOUND", "Unity instance no longer resolves: " + reference);
                 return resolved;
             }
             throw new RoboVisionException("INVALID_PARAMS", "target must be a RoboVision Unity id");
@@ -158,16 +191,15 @@ namespace Kodaxa.RoboVision.Editor
         private static string IdFor(UnityEngine.Object obj)
         {
             if (obj == null) return null;
-            var gid = GlobalObjectId.GetGlobalObjectIdSlow(obj);
-            var text = gid.ToString();
+            var text = GlobalObjectId.GetGlobalObjectIdSlow(obj).ToString();
             return text.StartsWith("GlobalObjectId_V1-0-", StringComparison.Ordinal)
                 ? "unity:instance:" + obj.GetInstanceID()
                 : "unity:" + text;
         }
 
-        private static JObject PropertyDescriptor(SerializedProperty property, bool includeValue)
+        private static JObject PropertyDescriptor(SerializedProperty property)
         {
-            var descriptor = new JObject
+            var result = new JObject
             {
                 ["path"] = property.propertyPath,
                 ["name"] = property.name,
@@ -175,35 +207,35 @@ namespace Kodaxa.RoboVision.Editor
                 ["depth"] = property.depth,
                 ["type"] = property.type,
                 ["property_type"] = property.propertyType.ToString(),
+                ["numeric_type"] = property.numericType.ToString(),
                 ["is_array"] = property.isArray,
-                ["has_visible_children"] = property.hasVisibleChildren
+                ["has_visible_children"] = property.hasVisibleChildren,
+                ["value"] = ReadProperty(property)
             };
-            if (property.isArray) descriptor["array_size"] = property.arraySize;
-            if (includeValue) descriptor["value"] = ReadProperty(property);
-            return descriptor;
+            if (property.isArray) result["array_size"] = property.arraySize;
+            return result;
         }
 
         private static JToken ReadProperty(SerializedProperty property)
         {
             switch (property.propertyType)
             {
-                case SerializedPropertyType.Integer: return property.longValue;
+                case SerializedPropertyType.Integer:
+                    return IsUnsigned(property.numericType) ? (JToken)property.ulongValue : property.longValue;
                 case SerializedPropertyType.Boolean: return property.boolValue;
-                case SerializedPropertyType.Float: return property.doubleValue;
+                case SerializedPropertyType.Float:
+                    return property.numericType == SerializedPropertyNumericType.Double ? (JToken)property.doubleValue : property.floatValue;
                 case SerializedPropertyType.String: return property.stringValue;
                 case SerializedPropertyType.Color: return ColorToken(property.colorValue);
                 case SerializedPropertyType.ObjectReference:
-                    return property.objectReferenceValue == null ? JValue.CreateNull() : new JObject
-                    {
-                        ["id"] = IdFor(property.objectReferenceValue), ["type"] = property.objectReferenceValue.GetType().FullName,
-                        ["name"] = property.objectReferenceValue.name
-                    };
+                    return property.objectReferenceValue == null ? JValue.CreateNull() : ObjectReferenceToken(property.objectReferenceValue);
                 case SerializedPropertyType.LayerMask: return property.intValue;
                 case SerializedPropertyType.Enum:
                     return new JObject
                     {
                         ["index"] = property.enumValueIndex,
-                        ["name"] = property.enumValueIndex >= 0 && property.enumValueIndex < property.enumNames.Length ? property.enumNames[property.enumValueIndex] : null,
+                        ["name"] = property.enumValueIndex >= 0 && property.enumValueIndex < property.enumNames.Length
+                            ? property.enumNames[property.enumValueIndex] : null,
                         ["names"] = new JArray(property.enumNames)
                     };
                 case SerializedPropertyType.Vector2: return Vector2Token(property.vector2Value);
@@ -219,10 +251,16 @@ namespace Kodaxa.RoboVision.Editor
                 case SerializedPropertyType.RectInt: return RectIntToken(property.rectIntValue);
                 case SerializedPropertyType.BoundsInt: return BoundsIntToken(property.boundsIntValue);
                 case SerializedPropertyType.ManagedReference:
-                    return new JObject { ["managed_reference_type"] = property.managedReferenceFullTypename, ["supported_for_write"] = false };
+                    return new JObject
+                    {
+                        ["managed_reference_type"] = property.managedReferenceFullTypename,
+                        ["supported_for_write"] = false
+                    };
                 case SerializedPropertyType.Hash128: return property.hash128Value.ToString();
                 case SerializedPropertyType.Generic:
-                    return property.isArray ? new JObject { ["array_size"] = property.arraySize, ["expand_with"] = "serialized.inspect" } : JValue.CreateNull();
+                    return property.isArray
+                        ? new JObject { ["array_size"] = property.arraySize, ["expand_with"] = "serialized.inspect" }
+                        : JValue.CreateNull();
                 default:
                     return new JObject { ["unsupported_value_type"] = property.propertyType.ToString() };
             }
@@ -230,34 +268,35 @@ namespace Kodaxa.RoboVision.Editor
 
         private static void WriteProperty(SerializedProperty property, JToken value)
         {
-            if (property.isArray && property.propertyType == SerializedPropertyType.Generic && value is JArray array)
+            if (property.isArray && property.propertyType == SerializedPropertyType.Generic && value is JArray values)
             {
-                property.arraySize = array.Count;
-                for (var i = 0; i < array.Count; i++) WriteProperty(property.GetArrayElementAtIndex(i), array[i]);
+                property.arraySize = values.Count;
+                for (var i = 0; i < values.Count; i++)
+                    WriteProperty(property.GetArrayElementAtIndex(i), values[i]);
                 return;
             }
 
             switch (property.propertyType)
             {
-                case SerializedPropertyType.Integer: property.longValue = value.Value<long>(); return;
+                case SerializedPropertyType.Integer:
+                    if (IsUnsigned(property.numericType)) property.ulongValue = value.Value<ulong>();
+                    else property.longValue = value.Value<long>();
+                    return;
                 case SerializedPropertyType.Boolean: property.boolValue = value.Value<bool>(); return;
-                case SerializedPropertyType.Float: property.doubleValue = value.Value<double>(); return;
-                case SerializedPropertyType.String: property.stringValue = value.Type == JTokenType.Null ? null : value.Value<string>(); return;
+                case SerializedPropertyType.Float:
+                    if (property.numericType == SerializedPropertyNumericType.Double) property.doubleValue = value.Value<double>();
+                    else property.floatValue = value.Value<float>();
+                    return;
+                case SerializedPropertyType.String:
+                    property.stringValue = value.Type == JTokenType.Null ? null : value.Value<string>();
+                    return;
                 case SerializedPropertyType.Color: property.colorValue = ReadColor(value); return;
                 case SerializedPropertyType.ObjectReference:
-                    property.objectReferenceValue = value.Type == JTokenType.Null ? null : ResolveObject(value.Type == JTokenType.String ? value.Value<string>() : value.Value<string>("id"));
+                    property.objectReferenceValue = value.Type == JTokenType.Null ? null : ResolveObject(ReferenceId(value));
                     return;
                 case SerializedPropertyType.LayerMask: property.intValue = value.Value<int>(); return;
                 case SerializedPropertyType.Enum:
-                    if (value.Type == JTokenType.String)
-                    {
-                        var requested = value.Value<string>();
-                        var index = Array.IndexOf(property.enumNames, requested);
-                        if (index < 0) throw new RoboVisionException("INVALID_PARAMS", "enum value not found: " + requested,
-                            data: new JArray(property.enumNames));
-                        property.enumValueIndex = index;
-                    }
-                    else property.enumValueIndex = value.Value<int>();
+                    WriteEnum(property, value);
                     return;
                 case SerializedPropertyType.Vector2: property.vector2Value = ReadVector2(value); return;
                 case SerializedPropertyType.Vector3: property.vector3Value = ReadVector3(value); return;
@@ -271,21 +310,66 @@ namespace Kodaxa.RoboVision.Editor
                 case SerializedPropertyType.Vector3Int: property.vector3IntValue = ReadVector3Int(value); return;
                 case SerializedPropertyType.RectInt: property.rectIntValue = ReadRectInt(value); return;
                 case SerializedPropertyType.BoundsInt: property.boundsIntValue = ReadBoundsInt(value); return;
-                case SerializedPropertyType.ManagedReference:
-                    throw new RoboVisionException("UNSUPPORTED", "managed-reference construction is not supported by generic serialized.set; use a typed operation");
                 case SerializedPropertyType.Hash128:
-                    if (!Hash128.TryParse(value.Value<string>(), out var hash)) throw new RoboVisionException("INVALID_PARAMS", "invalid Hash128 string");
-                    property.hash128Value = hash;
+                    try { property.hash128Value = Hash128.Parse(value.Value<string>()); }
+                    catch (Exception ex) { throw new RoboVisionException("INVALID_PARAMS", "invalid Hash128 string: " + ex.Message); }
                     return;
+                case SerializedPropertyType.ManagedReference:
+                    throw new RoboVisionException("UNSUPPORTED", "managed-reference construction requires a typed operation");
                 default:
                     throw new RoboVisionException("UNSUPPORTED", "serialized property type is not safely writable: " + property.propertyType);
             }
         }
 
+        private static void WriteEnum(SerializedProperty property, JToken value)
+        {
+            if (value.Type != JTokenType.String)
+            {
+                property.enumValueIndex = value.Value<int>();
+                return;
+            }
+            var requested = value.Value<string>();
+            var index = Array.IndexOf(property.enumNames, requested);
+            if (index < 0)
+                throw new RoboVisionException("INVALID_PARAMS", "enum value not found: " + requested, data: new JArray(property.enumNames));
+            property.enumValueIndex = index;
+        }
+
+        private static bool IsUnsigned(SerializedPropertyNumericType type)
+        {
+            return type == SerializedPropertyNumericType.UInt8 ||
+                   type == SerializedPropertyNumericType.UInt16 ||
+                   type == SerializedPropertyNumericType.UInt32 ||
+                   type == SerializedPropertyNumericType.UInt64;
+        }
+
+        private static string RequiredString(JObject parameters, string key)
+        {
+            var value = parameters.Value<string>(key);
+            if (String.IsNullOrWhiteSpace(value))
+                throw new RoboVisionException("INVALID_PARAMS", key + " is required");
+            return value;
+        }
+
+        private static string ReferenceId(JToken value)
+        {
+            if (value.Type == JTokenType.String) return value.Value<string>();
+            var id = value["id"]?.Value<string>();
+            if (String.IsNullOrWhiteSpace(id))
+                throw new RoboVisionException("INVALID_PARAMS", "object reference value must be an id string or {id}");
+            return id;
+        }
+
+        private static JObject ObjectReferenceToken(UnityEngine.Object value)
+        {
+            return new JObject { ["id"] = IdFor(value), ["type"] = value.GetType().FullName, ["name"] = value.name };
+        }
+
         private static JArray RequireArray(JToken token, int count, string name)
         {
             var array = token as JArray;
-            if (array == null || array.Count != count) throw new RoboVisionException("INVALID_PARAMS", name + " must be an array of " + count + " numbers");
+            if (array == null || array.Count != count)
+                throw new RoboVisionException("INVALID_PARAMS", name + " must be an array of " + count + " numbers");
             return array;
         }
 
