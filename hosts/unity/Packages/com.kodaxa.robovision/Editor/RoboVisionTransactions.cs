@@ -33,9 +33,11 @@ namespace Kodaxa.RoboVision.Editor
             if (_active.ExternalChangeFingerprint == null) _active.ExternalChangeFingerprint = fingerprint;
         }
 
-        public OperationCheckpoint PrepareMutation(string label)
+        public OperationCheckpoint PrepareMutation(string label, string fingerprint = null)
         {
-            var fingerprint = RoboVisionSceneTools.ComputeFingerprint();
+            // The host has already re-read the scene to validate if_revision, so
+            // recomputing here would pay for the same hash twice.
+            fingerprint = fingerprint ?? RoboVisionSceneTools.ComputeFingerprint();
             Undo.IncrementCurrentGroup();
             var group = Undo.GetCurrentGroup();
             Undo.SetCurrentGroupName("RoboVision OP " + label);

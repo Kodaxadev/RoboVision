@@ -177,6 +177,30 @@ namespace Kodaxa.RoboVision.Editor
             _dirty = false;
         }
 
+        /// <summary>
+        /// Re-read the scene before a mutation is allowed to run.
+        /// </summary>
+        /// <remarks>
+        /// hierarchyChanged and postprocessModifications are notifications, not
+        /// guarantees. The transport also dispatches up to eight requests per
+        /// editor update, so a burst runs with no tick in between and the dirty
+        /// flag can still be clear while the scene has moved. Trusting it would
+        /// let a stale if_revision pass the concurrency check and let an
+        /// out-of-band edit go unnoticed inside a transaction.
+        /// </remarks>
+        private string Resync()
+        {
+            var current = RoboVisionSceneTools.ComputeFingerprint();
+            if (_fingerprint != null && !String.Equals(_fingerprint, current, StringComparison.Ordinal))
+            {
+                if (Transactions.Active) Transactions.MarkExternalChange(current);
+                _revision++;
+            }
+            _fingerprint = current;
+            _dirty = false;
+            return current;
+        }
+
         internal void AcceptOwnMutation()
         {
             var current = RoboVisionSceneTools.ComputeFingerprint();
@@ -196,13 +220,15 @@ namespace Kodaxa.RoboVision.Editor
         internal JObject Dispatch(JObject raw)
         {
             var watch = Stopwatch.StartNew();
-            var requestId = raw.Value<string>("id") ?? "invalid";
+            var requestId = raw.Value<string>("id");
             RoboVisionTransactions.OperationCheckpoint checkpoint = null;
             try
             {
                 RefreshDirtyState();
                 if (raw.Value<string>("rv") != ProtocolVersion)
                     throw new RoboVisionException("PROTOCOL_MISMATCH", "expected protocol " + ProtocolVersion);
+                // Checked before defaulting: coalescing first made this unreachable,
+                // so a request with no id was accepted and answered as "invalid".
                 if (String.IsNullOrWhiteSpace(requestId))
                     throw new RoboVisionException("INVALID_REQUEST", "id must be a non-empty string");
                 var method = raw.Value<string>("method");
@@ -211,6 +237,10 @@ namespace Kodaxa.RoboVision.Editor
                 var parameters = raw["params"] as JObject ?? new JObject();
                 if (!_tools.TryGetValue(method, out var spec))
                     throw new RoboVisionException("UNKNOWN_METHOD", "unknown method: " + method);
+
+                string checkpointFingerprint = null;
+                if (spec.Mutating || spec.TransactionControl)
+                    checkpointFingerprint = Resync();
 
                 var revisionToken = raw["if_revision"];
                 if (spec.Mutating && revisionToken != null && revisionToken.Type != JTokenType.Null)
@@ -225,7 +255,7 @@ namespace Kodaxa.RoboVision.Editor
                 }
 
                 if (spec.Mutating && !spec.TransactionControl)
-                    checkpoint = Transactions.PrepareMutation(method);
+                    checkpoint = Transactions.PrepareMutation(method, checkpointFingerprint);
 
                 var result = spec.Handler(parameters);
                 if (spec.Mutating && (!spec.TransactionControl || method == "transaction.rollback"))
@@ -235,7 +265,7 @@ namespace Kodaxa.RoboVision.Editor
                 return new JObject
                 {
                     ["rv"] = ProtocolVersion,
-                    ["id"] = requestId,
+                    ["id"] = requestId ?? "invalid",
                     ["ok"] = true,
                     ["revision"] = _revision,
                     ["result"] = result,
@@ -264,7 +294,7 @@ namespace Kodaxa.RoboVision.Editor
                 return new JObject
                 {
                     ["rv"] = ProtocolVersion,
-                    ["id"] = requestId,
+                    ["id"] = requestId ?? "invalid",
                     ["ok"] = false,
                     ["revision"] = _revision,
                     ["error"] = error,
@@ -329,7 +359,7 @@ namespace Kodaxa.RoboVision.Editor
             return new JObject
             {
                 ["rv"] = ProtocolVersion,
-                ["id"] = requestId,
+                ["id"] = requestId ?? "invalid",
                 ["ok"] = false,
                 ["revision"] = _revision,
                 ["error"] = error,
