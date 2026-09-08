@@ -64,6 +64,16 @@ jobs:
         run: |
           "${BLENDER_DIR}/blender" --version | head -n 2
 
+      - name: Run semantic mesh addressing tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${BLENDER_DIR}/blender" \
+            --background \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/semantic_query.py
+
       - name: Run RoboVision Gate 1 in interactive Blender
         shell: bash
         run: |
