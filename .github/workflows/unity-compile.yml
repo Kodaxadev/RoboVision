@@ -61,6 +61,7 @@ jobs:
             -v "$PWD:/repo" \
             -w /repo \
             -e UNITY_DATA=/opt/unity/Editor/Data \
+            -e UNITY_VERSION="${UNITY_VERSION}" \
             -e REPO=/repo \
             -e EXTRA_REFS=/repo/.unity-compile-refs \
             "${UNITY_IMAGE}" \

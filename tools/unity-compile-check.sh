@@ -19,7 +19,10 @@ find_csc() {
   local candidate
   candidate="$UNITY_DATA/DotNetSdkRoslyn/csc.dll"
   [ -f "$candidate" ] && { printf '%s' "$candidate"; return 0; }
-  find "$UNITY_DATA/DotNetSdk" -name csc.dll -path '*Roslyn*' -print 2>/dev/null | sort | head -n 1
+  # A miss here is a normal outcome, not a script error: report it through the
+  # empty result so the caller can fail with a message instead of set -e
+  # aborting silently.
+  find "$UNITY_DATA/DotNetSdk" -name csc.dll -path '*Roslyn*' -print 2>/dev/null | sort | head -n 1 || true
 }
 
 find_dotnet() {
@@ -55,7 +58,12 @@ fail() { echo "::error::$*" >&2; exit 2; }
 
 # Derive the Unity version from the Hub directory layout unless told otherwise,
 # so the gate compiles the same branch the installed editor would.
-UNITY_VERSION="${UNITY_VERSION:-$(printf %s "$UNITY_DATA" | grep -oE '[0-9]{4,}[.][0-9]+[.][0-9]+' | head -n 1)}"
+if [ -z "${UNITY_VERSION:-}" ]; then
+  # A Hub install encodes the version in its path; a CI image such as
+  # /opt/unity/Editor/Data does not. grep exiting 1 there must not take
+  # the whole script down under set -e, so the miss is defaulted below.
+  UNITY_VERSION="$(printf %s "$UNITY_DATA" | grep -oE '[0-9]{4,}[.][0-9]+[.][0-9]+' | head -n 1 || true)"
+fi
 UNITY_VERSION="${UNITY_VERSION:-6000.0.0}"
 UNITY_MAJOR="${UNITY_VERSION%%.*}"
 UNITY_MINOR="$(printf %s "$UNITY_VERSION" | cut -d. -f2)"
