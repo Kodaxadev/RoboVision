@@ -28,12 +28,7 @@ def _call(host: HostName, method: str, params: dict[str, Any] | None, if_revisio
 
 
 def _model_image(path: str, max_bytes: int = 1_000_000) -> tuple[bytes, str, dict[str, Any]]:
-    """Return a model-friendly image while preserving the full artifact on disk.
-
-    PNG/JPEG files already under the target size are passed through. Larger
-    images are converted to JPEG and progressively resized/encoded. This keeps
-    visual feedback practical for MCP clients with conservative image limits.
-    """
+    """Return a model-friendly image while preserving the full artifact on disk."""
     source = Path(path)
     if not source.is_file():
         raise FileNotFoundError(path)
@@ -123,18 +118,18 @@ def build_server():
         except Exception as exc:
             return {"ok": False, "host": host, "method": method, "error": _error_payload(exc)}
 
-    @mcp.tool()
+    @mcp.tool(structured_output=False)
     def rv_capture(
         host: HostName,
         params: dict[str, Any] | None = None,
         if_revision: int | None = None,
         max_model_bytes: int = 1_000_000,
-    ) -> CallToolResult:
-        """Capture the current editor view and return both evidence metadata and pixels.
+    ):
+        """Capture the editor view and return provenance plus actual image pixels.
 
         The editor host records projection/camera provenance with the artifact.
         RoboVision preserves the full-resolution local artifact and only
-        transcodes a model-facing copy when needed for MCP transport limits.
+        transcodes a model-facing copy when needed for conservative client limits.
         """
         capture_params = dict(params or {})
         if host == "unity":
@@ -146,7 +141,10 @@ def build_server():
             path = artifact.get("path")
             if not isinstance(path, str) or not path:
                 raise RuntimeError("host capture did not return an image artifact path")
-            image_bytes, mime, transport_meta = _model_image(path, max(100_000, min(int(max_model_bytes), 8_000_000)))
+            image_bytes, mime, transport_meta = _model_image(
+                path,
+                max(100_000, min(int(max_model_bytes), 8_000_000)),
+            )
             structured = dict(response)
             structured["model_image"] = transport_meta
             summary = json.dumps(structured, ensure_ascii=False, separators=(",", ":"))
