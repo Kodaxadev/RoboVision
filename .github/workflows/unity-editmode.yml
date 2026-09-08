@@ -1,0 +1,109 @@
+name: unity-editmode
+
+# Gate 4 runs the package's EditMode tests inside a real Unity Editor, which
+# needs an activated licence. The job is therefore gated on UNITY_LICENSE being
+# configured and is skipped — not failed — when it is absent, so the absence of
+# credentials never looks like a passing gate.
+#
+# To enable: add repository secrets UNITY_LICENSE (contents of a .ulf file),
+# and UNITY_EMAIL / UNITY_PASSWORD for a Personal licence.
+
+on:
+  push:
+    paths:
+      - "hosts/unity/**"
+      - "tools/unity-testbed.sh"
+      - ".github/workflows/unity-editmode.yml"
+  pull_request:
+    paths:
+      - "hosts/unity/**"
+      - "tools/unity-testbed.sh"
+      - ".github/workflows/unity-editmode.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unity-editmode-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      UNITY_VERSION: "6000.0.83f1"
+      UNITY_IMAGE: "unityci/editor:ubuntu-6000.0.83f1-base-3"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for a Unity licence
+        id: licence
+        shell: bash
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+        run: |
+          if [ -n "${UNITY_LICENSE:-}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Gate 4 skipped"
+              echo
+              echo "No UNITY_LICENSE secret is configured, so the Unity EditMode tests did not run."
+              echo "Gate 4 remains unproven in CI; see docs/GATES.md."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Run RoboVision EditMode tests in Unity
+        if: steps.licence.outputs.available == 'true'
+        shell: bash
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/unity-gate4
+          printf '%s' "$UNITY_LICENSE" > "$PWD/unity.ulf"
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            -e UNITY_EXE=/opt/unity/Editor/Unity \
+            -e UNITY_VERSION="${UNITY_VERSION}" \
+            -e UNITY_EMAIL \
+            -e UNITY_PASSWORD \
+            "${UNITY_IMAGE}" \
+            bash -c '
+              set -euo pipefail
+              /opt/unity/Editor/Unity -batchmode -nographics -logFile /dev/stdout \
+                -manualLicenseFile /repo/unity.ulf -quit || true
+              bash /repo/tools/unity-testbed.sh
+            '
+
+      - name: Upload Unity evidence
+        if: always() && steps.licence.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-gate4-evidence
+          path: artifacts/unity-gate4/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Summary
+        if: always() && steps.licence.outputs.available == 'true'
+        shell: bash
+        run: |
+          if [ -s artifacts/unity-gate4/results.xml ]; then
+            python3 - artifacts/unity-gate4/results.xml >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          print("## Unity EditMode (Gate 4)")
+          print()
+          print("total={} passed={} failed={} skipped={}".format(
+              root.get("total"), root.get("passed"), root.get("failed"), root.get("skipped")))
+          PY
+          else
+            echo "## Unity EditMode produced no results" >> "$GITHUB_STEP_SUMMARY"
+          fi
