@@ -123,14 +123,8 @@ namespace Kodaxa.RoboVision.Editor
 
         private void Update()
         {
-            try
-            {
-                _server?.Poll(8);
-            }
-            catch (Exception ex)
-            {
-                UnityEngine.Debug.LogException(ex);
-            }
+            try { _server?.Poll(8); }
+            catch (Exception ex) { UnityEngine.Debug.LogException(ex); }
         }
 
         private UndoPropertyModification[] OnPostprocessModifications(UndoPropertyModification[] modifications)
@@ -156,15 +150,23 @@ namespace Kodaxa.RoboVision.Editor
 
         internal void AcceptOwnMutation()
         {
-            _fingerprint = RoboVisionSceneTools.ComputeFingerprint();
+            var current = RoboVisionSceneTools.ComputeFingerprint();
+            if (_fingerprint != null && !String.Equals(_fingerprint, current, StringComparison.Ordinal)) _revision++;
+            _fingerprint = current;
             _dirty = false;
-            _revision++;
+        }
+
+        private void AcceptRecoveredState(string fingerprint)
+        {
+            _fingerprint = fingerprint;
+            _dirty = false;
         }
 
         private JObject Dispatch(JObject raw)
         {
             var watch = Stopwatch.StartNew();
             var requestId = raw.Value<string>("id") ?? "invalid";
+            RoboVisionTransactions.OperationCheckpoint checkpoint = null;
             try
             {
                 RefreshDirtyState();
@@ -191,9 +193,13 @@ namespace Kodaxa.RoboVision.Editor
                             new JObject { ["expected"] = expected, ["actual"] = _revision });
                 }
 
+                if (spec.Mutating && !spec.TransactionControl)
+                    checkpoint = Transactions.PrepareMutation(method);
+
                 var result = spec.Handler(parameters);
-                if (spec.Mutating && method != "transaction.begin" && method != "transaction.commit")
+                if (spec.Mutating && (!spec.TransactionControl || method == "transaction.rollback"))
                     AcceptOwnMutation();
+
                 watch.Stop();
                 return new JObject
                 {
@@ -207,14 +213,23 @@ namespace Kodaxa.RoboVision.Editor
             }
             catch (RoboVisionException ex)
             {
+                var recoveryFailure = TryRecoverFailedOperation(checkpoint, ex, out var recovery);
+                return ErrorResponse(requestId, watch, recoveryFailure ?? ex, recovery);
+            }
+            catch (Exception ex)
+            {
+                var recoveryFailure = TryRecoverFailedOperation(checkpoint, ex, out var recovery);
+                if (recoveryFailure != null)
+                    return ErrorResponse(requestId, watch, recoveryFailure, recovery);
+                UnityEngine.Debug.LogException(ex);
                 watch.Stop();
                 var error = new JObject
                 {
-                    ["code"] = ex.Code,
-                    ["message"] = ex.Message,
-                    ["retryable"] = ex.Retryable
+                    ["code"] = "HOST_EXCEPTION",
+                    ["message"] = ex.GetType().Name + ": host operation failed; see Unity Console",
+                    ["retryable"] = false
                 };
-                if (ex.Data != null) error["data"] = ex.Data;
+                if (recovery != null) error["data"] = new JObject { ["automatic_recovery"] = recovery };
                 return new JObject
                 {
                     ["rv"] = ProtocolVersion,
@@ -225,25 +240,70 @@ namespace Kodaxa.RoboVision.Editor
                     ["timing_ms"] = Math.Round(watch.Elapsed.TotalMilliseconds, 3)
                 };
             }
-            catch (Exception ex)
+        }
+
+        private RoboVisionException TryRecoverFailedOperation(
+            RoboVisionTransactions.OperationCheckpoint checkpoint,
+            Exception original,
+            out JObject recovery)
+        {
+            recovery = null;
+            if (checkpoint == null) return null;
+            try
             {
-                watch.Stop();
-                UnityEngine.Debug.LogException(ex);
-                return new JObject
+                recovery = Transactions.RecoverFailedMutation(checkpoint);
+                AcceptRecoveredState(checkpoint.Fingerprint);
+                return null;
+            }
+            catch (RoboVisionException recoveryError)
+            {
+                var data = recoveryError.Data is JObject objectData ? (JObject)objectData.DeepClone() : new JObject();
+                var originalData = new JObject
                 {
-                    ["rv"] = ProtocolVersion,
-                    ["id"] = requestId,
-                    ["ok"] = false,
-                    ["revision"] = _revision,
-                    ["error"] = new JObject
-                    {
-                        ["code"] = "HOST_EXCEPTION",
-                        ["message"] = ex.GetType().Name + ": host operation failed; see Unity Console",
-                        ["retryable"] = false
-                    },
-                    ["timing_ms"] = Math.Round(watch.Elapsed.TotalMilliseconds, 3)
+                    ["type"] = original.GetType().Name,
+                    ["message"] = original.Message
+                };
+                if (original is RoboVisionException rvOriginal)
+                {
+                    originalData["code"] = rvOriginal.Code;
+                    if (rvOriginal.Data != null) originalData["data"] = rvOriginal.Data.DeepClone();
+                }
+                data["original_error"] = originalData;
+                _dirty = true;
+                return new RoboVisionException(recoveryError.Code, recoveryError.Message, recoveryError.Retryable, data);
+            }
+        }
+
+        private JObject ErrorResponse(string requestId, Stopwatch watch, RoboVisionException ex, JObject recovery)
+        {
+            watch.Stop();
+            var error = new JObject
+            {
+                ["code"] = ex.Code,
+                ["message"] = ex.Message,
+                ["retryable"] = ex.Retryable
+            };
+            if (recovery != null)
+            {
+                error["data"] = new JObject
+                {
+                    ["operation_error_data"] = ex.Data?.DeepClone(),
+                    ["automatic_recovery"] = recovery
                 };
             }
+            else if (ex.Data != null)
+            {
+                error["data"] = ex.Data.DeepClone();
+            }
+            return new JObject
+            {
+                ["rv"] = ProtocolVersion,
+                ["id"] = requestId,
+                ["ok"] = false,
+                ["revision"] = _revision,
+                ["error"] = error,
+                ["timing_ms"] = Math.Round(watch.Elapsed.TotalMilliseconds, 3)
+            };
         }
 
         private void RegisterSystemTools()
@@ -290,7 +350,8 @@ namespace Kodaxa.RoboVision.Editor
                     ["transaction"] = new JObject
                     {
                         ["active"] = Transactions.Active,
-                        ["external_change_protection"] = true
+                        ["external_change_protection"] = true,
+                        ["failed_operation_recovery"] = true
                     }
                 },
                 stability: "beta");
