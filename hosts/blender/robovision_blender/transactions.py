@@ -51,9 +51,38 @@ class TransactionManager:
         if tx.external_change_fingerprint is None:
             tx.external_change_fingerprint = fingerprint
 
-    def prepare_standalone_mutation(self, label: str) -> None:
-        if self.active is None:
-            self._push_undo(f"RoboVision {label}")
+    def prepare_mutation(self, label: str) -> dict[str, Any]:
+        """Create a pre-operation undo point and return a deep recovery checkpoint."""
+        before = scene_snapshot(deep=True)
+        self._push_undo(f"RoboVision OP {label}")
+        return before
+
+    def recover_failed_mutation(self, before: dict[str, Any], *, max_steps: int = 16) -> dict[str, Any]:
+        """Restore the exact pre-operation fingerprint after a handler failure."""
+        target = before["fingerprint"]
+        current = scene_snapshot(deep=True)
+        if current["fingerprint"] == target:
+            return {"recovered": True, "undo_steps": 0, "fingerprint": target}
+
+        for step in range(1, max_steps + 1):
+            if not bpy.ops.ed.undo.poll():
+                break
+            result = bpy.ops.ed.undo()
+            if "FINISHED" not in result:
+                break
+            current = scene_snapshot(deep=True)
+            if current["fingerprint"] == target:
+                return {"recovered": True, "undo_steps": step, "fingerprint": target}
+
+        raise HostError(
+            "MUTATION_RECOVERY_INCOMPLETE",
+            "failed operation changed Blender state and automatic recovery did not restore the pre-operation fingerprint",
+            data={
+                "expected_fingerprint": target,
+                "actual_fingerprint": current["fingerprint"],
+                "max_steps": max_steps,
+            },
+        )
 
     def commit(self, tx_id: str, *, force: bool = False) -> dict[str, Any]:
         tx = self._require(tx_id)
@@ -87,7 +116,9 @@ class TransactionManager:
         for step in range(1, max_steps + 1):
             if not bpy.ops.ed.undo.poll():
                 break
-            bpy.ops.ed.undo()
+            result = bpy.ops.ed.undo()
+            if "FINISHED" not in result:
+                break
             current = scene_snapshot(deep=True)
             if current["fingerprint"] == target:
                 self.active = None
