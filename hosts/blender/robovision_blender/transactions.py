@@ -14,6 +14,7 @@ class Transaction:
     id: str
     label: str
     begin_snapshot: dict[str, Any]
+    external_change_fingerprint: str | None = None
 
 
 class TransactionManager:
@@ -36,14 +37,27 @@ class TransactionManager:
         before = scene_snapshot(deep=True)
         self._push_undo(f"RoboVision BEGIN {label}")
         self.active = Transaction(tx_id, label, before)
-        return {"transaction": tx_id, "label": label, "begin_fingerprint": before["fingerprint"]}
+        return {
+            "transaction": tx_id,
+            "label": label,
+            "begin_fingerprint": before["fingerprint"],
+            "contaminated": False,
+        }
+
+    def mark_external_change(self, fingerprint: str) -> None:
+        tx = self.active
+        if tx is None or fingerprint == tx.begin_snapshot["fingerprint"]:
+            return
+        if tx.external_change_fingerprint is None:
+            tx.external_change_fingerprint = fingerprint
 
     def prepare_standalone_mutation(self, label: str) -> None:
         if self.active is None:
             self._push_undo(f"RoboVision {label}")
 
-    def commit(self, tx_id: str) -> dict[str, Any]:
+    def commit(self, tx_id: str, *, force: bool = False) -> dict[str, Any]:
         tx = self._require(tx_id)
+        self._assert_safe_or_forced(tx, force=force, action="commit")
         self._push_undo(f"RoboVision COMMIT {tx.label}")
         after = scene_snapshot(deep=True)
         self.active = None
@@ -52,15 +66,23 @@ class TransactionManager:
             "committed": True,
             "begin_fingerprint": tx.begin_snapshot["fingerprint"],
             "final_fingerprint": after["fingerprint"],
+            "forced_after_external_change": tx.external_change_fingerprint is not None,
         }
 
-    def rollback(self, tx_id: str, *, max_steps: int = 128) -> dict[str, Any]:
+    def rollback(self, tx_id: str, *, max_steps: int = 128, force: bool = False) -> dict[str, Any]:
         tx = self._require(tx_id)
+        self._assert_safe_or_forced(tx, force=force, action="rollback")
         target = tx.begin_snapshot["fingerprint"]
         current = scene_snapshot(deep=True)
         if current["fingerprint"] == target:
             self.active = None
-            return {"transaction": tx.id, "rolled_back": True, "undo_steps": 0, "fingerprint": target}
+            return {
+                "transaction": tx.id,
+                "rolled_back": True,
+                "undo_steps": 0,
+                "fingerprint": target,
+                "forced_after_external_change": tx.external_change_fingerprint is not None,
+            }
 
         for step in range(1, max_steps + 1):
             if not bpy.ops.ed.undo.poll():
@@ -69,9 +91,14 @@ class TransactionManager:
             current = scene_snapshot(deep=True)
             if current["fingerprint"] == target:
                 self.active = None
-                return {"transaction": tx.id, "rolled_back": True, "undo_steps": step, "fingerprint": target}
+                return {
+                    "transaction": tx.id,
+                    "rolled_back": True,
+                    "undo_steps": step,
+                    "fingerprint": target,
+                    "forced_after_external_change": tx.external_change_fingerprint is not None,
+                }
 
-        # Do not claim success or continue walking backwards into pre-transaction history.
         raise HostError(
             "ROLLBACK_INCOMPLETE",
             "undo did not restore the transaction begin fingerprint",
@@ -80,6 +107,21 @@ class TransactionManager:
                 "expected_fingerprint": target,
                 "actual_fingerprint": current["fingerprint"],
                 "max_steps": max_steps,
+            },
+        )
+
+    @staticmethod
+    def _assert_safe_or_forced(tx: Transaction, *, force: bool, action: str) -> None:
+        if tx.external_change_fingerprint is None or force:
+            return
+        raise HostError(
+            "TRANSACTION_CONTAMINATED",
+            f"an out-of-band Blender edit occurred during the RoboVision transaction; refusing automatic {action}",
+            data={
+                "transaction": tx.id,
+                "begin_fingerprint": tx.begin_snapshot["fingerprint"],
+                "external_change_fingerprint": tx.external_change_fingerprint,
+                "force_parameter": "Set force=true only if overwriting/including the external edit is intentional.",
             },
         )
 
