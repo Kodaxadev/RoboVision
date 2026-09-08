@@ -15,7 +15,7 @@ def commit(params, runtime):
     tx_id = params.get("transaction")
     if not isinstance(tx_id, str) or not tx_id:
         raise HostError("INVALID_PARAMS", "transaction is required")
-    return runtime.transactions.commit(tx_id)
+    return runtime.transactions.commit(tx_id, force=bool(params.get("force", False)))
 
 
 def rollback(params, runtime):
@@ -23,7 +23,11 @@ def rollback(params, runtime):
     if not isinstance(tx_id, str) or not tx_id:
         raise HostError("INVALID_PARAMS", "transaction is required")
     max_steps = max(1, min(512, int(params.get("max_steps", 128))))
-    return runtime.transactions.rollback(tx_id, max_steps=max_steps)
+    return runtime.transactions.rollback(
+        tx_id,
+        max_steps=max_steps,
+        force=bool(params.get("force", False)),
+    )
 
 
 def register(registry) -> None:
