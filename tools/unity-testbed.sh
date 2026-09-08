@@ -27,6 +27,7 @@ RESULTS="${RESULTS:-$REPO/artifacts/unity-gate4/results.xml}"
 LOG="${LOG:-$REPO/artifacts/unity-gate4/editor.log}"
 UNITY_EXE="${UNITY_EXE:-}"
 KEEP=0
+GUI=0
 
 fail() { echo "::error::$*" >&2; exit 2; }
 
@@ -37,6 +38,7 @@ while [ $# -gt 0 ]; do
     --results) RESULTS="$2"; shift 2 ;;
     --log)     LOG="$2"; shift 2 ;;
     --keep)    KEEP=1; shift ;;
+    --gui)     GUI=1; shift ;;
     *) fail "unknown argument: $1" ;;
   esac
 done
@@ -98,10 +100,18 @@ printf 'm_EditorVersion: %s\n' "$UNITY_VERSION" > "$PROJECT/ProjectSettings/Proj
 echo "  manifest:"
 sed 's/^/    /' "$PROJECT/Packages/manifest.json"
 
+# viewport.capture needs a real SceneView, which -batchmode -nographics
+# does not provide. --gui runs the same suite in a windowed editor so
+# those tests execute instead of reporting themselves skipped.
+MODE_ARGS=(-batchmode -nographics)
+if [ "$GUI" = "1" ]; then
+  MODE_ARGS=()
+  echo "  mode:    windowed editor (SceneView available)"
+fi
+
 set +e
 "$UNITY_EXE" \
-  -batchmode \
-  -nographics \
+  "${MODE_ARGS[@]}" \
   -disable-assembly-updater \
   -projectPath "$(native "$PROJECT")" \
   -runTests \
@@ -120,9 +130,12 @@ print("  tests: total={} passed={} failed={} skipped={} inconclusive={}".format(
     root.get("total"), root.get("passed"), root.get("failed"),
     root.get("skipped"), root.get("inconclusive")))
 for case in root.iter("test-case"):
-    if case.get("result") != "Passed":
-        message = case.findtext("failure/message") or ""
-        print("  FAILED {}: {}".format(case.get("fullname"), " ".join(message.split())[:400]))
+    result = case.get("result")
+    if result == "Passed":
+        continue
+    label = "SKIPPED" if result in ("Skipped", "Inconclusive") else "FAILED"
+    message = case.findtext("failure/message") or case.findtext("reason/message") or ""
+    print("  {} {}: {}".format(label, case.get("fullname"), " ".join(message.split())[:400]))
 PY
 else
   echo "  no test results were produced"

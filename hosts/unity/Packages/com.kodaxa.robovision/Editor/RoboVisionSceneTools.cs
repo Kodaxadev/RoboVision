@@ -174,27 +174,46 @@ namespace Kodaxa.RoboVision.Editor
             return RoboVisionSessionHandles.Token(obj);
         }
 
+        private static JObject SceneState(UnityEngine.SceneManagement.Scene scene, string kind)
+        {
+            var objects = scene.GetRootGameObjects()
+                .SelectMany(root => root.GetComponentsInChildren<Transform>(true))
+                .Select(t => t.gameObject)
+                .Distinct()
+                .Select(ObjectState)
+                .OrderBy(o => o.Value<string>("id"), StringComparer.Ordinal);
+            return new JObject
+            {
+                ["name"] = scene.name,
+                ["path"] = scene.path,
+                ["build_index"] = scene.buildIndex,
+                ["dirty"] = scene.isDirty,
+                ["kind"] = kind,
+                ["objects"] = new JArray(objects)
+            };
+        }
+
         private static JObject CaptureState()
         {
+            // A Prefab Stage edits its contents in a preview scene that
+            // SceneManager does not enumerate. Reporting only SceneManager's
+            // scenes meant that with a prefab open for editing the host
+            // described an empty project, so an agent would believe there was
+            // nothing there and create objects in the wrong place.
+            var stage = UnityEditor.SceneManagement.PrefabStageUtility.GetCurrentPrefabStage();
+            if (stage != null && stage.scene.IsValid())
+            {
+                var staged = SceneState(stage.scene, "prefab_stage");
+                staged["prefab_asset_path"] = stage.assetPath;
+                return new JObject { ["scenes"] = new JArray { staged } };
+            }
+
             var scenes = new JArray();
             for (var i = 0; i < SceneManager.sceneCount; i++)
             {
                 var scene = SceneManager.GetSceneAt(i);
                 if (!scene.isLoaded) continue;
-                var objects = scene.GetRootGameObjects()
-                    .SelectMany(root => root.GetComponentsInChildren<Transform>(true))
-                    .Select(t => t.gameObject)
-                    .Distinct()
-                    .Select(ObjectState)
-                    .OrderBy(o => o.Value<string>("id"), StringComparer.Ordinal);
-                scenes.Add(new JObject
-                {
-                    ["name"] = scene.name,
-                    ["path"] = scene.path,
-                    ["build_index"] = scene.buildIndex,
-                    ["dirty"] = scene.isDirty,
-                    ["objects"] = new JArray(objects)
-                });
+                scenes.Add(SceneState(scene, "scene"));
             }
             return new JObject { ["scenes"] = scenes };
         }
