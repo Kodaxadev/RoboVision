@@ -91,13 +91,57 @@ def build_server():
 
         Always call this when starting work in an unfamiliar editor session. It
         returns exact editor/version information, scene revision, security facts,
-        limitations and the live structured operation list. Never assume Blender
-        and Unity expose identical capabilities.
+        limitations and the compact live structured operation list. Never assume
+        Blender and Unity expose identical capabilities.
         """
         try:
             return _call(host, "system.hello", {}, None)
         except Exception as exc:
             return {"ok": False, "host": host, "error": _error_payload(exc)}
+
+    @mcp.tool()
+    def rv_tools(
+        host: HostName = "blender",
+        query: str = "",
+        prefix: str = "",
+        tags: list[str] | None = None,
+        include_schema: bool = False,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Search the connected host's live structured-operation catalog.
+
+        Prefer this over guessing operation names. Query matches names, summaries
+        and tags; prefix narrows to a family such as `mesh.`. Set include_schema
+        only when you need parameter contracts for a page of results. Blender
+        supports full search/schema paging; older hosts may return a simpler
+        unfiltered capability list until they reach protocol parity.
+        """
+        params = {
+            "query": query,
+            "prefix": prefix,
+            "tags": tags or [],
+            "include_schema": include_schema,
+            "offset": offset,
+            "limit": limit,
+        }
+        try:
+            return _call(host, "system.capabilities", params, None)
+        except Exception as exc:
+            return {"ok": False, "host": host, "method": "system.capabilities", "error": _error_payload(exc)}
+
+    @mcp.tool()
+    def rv_method(host: HostName, method: str) -> dict[str, Any]:
+        """Get the exact parameter schema and safety metadata for one host method.
+
+        Use this before a complex or unfamiliar edit. If a host has not yet
+        implemented schema discovery the returned structured error makes that
+        limitation explicit rather than encouraging argument guessing.
+        """
+        try:
+            return _call(host, "system.method", {"method": method}, None)
+        except Exception as exc:
+            return {"ok": False, "host": host, "method": method, "error": _error_payload(exc)}
 
     @mcp.tool()
     def rv_call(
@@ -108,10 +152,10 @@ def build_server():
     ) -> dict[str, Any]:
         """Call one structured RoboVision editor operation.
 
-        Use rv_status first to discover supported methods. For mutations, pass
-        the most recently observed scene revision as if_revision whenever
-        possible. For visual capture use rv_capture so the model receives pixels,
-        not only an artifact path.
+        Use rv_status/rv_tools first to discover supported methods and rv_method
+        for an exact schema when needed. For mutations, pass the most recently
+        observed scene revision as if_revision whenever possible. For visual
+        capture use rv_capture so the model receives pixels, not only a path.
         """
         try:
             return _call(host, method, params, if_revision)
