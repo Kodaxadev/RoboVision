@@ -2,6 +2,9 @@
 
 Tool count is not a release criterion. RoboVision advances when end-to-end gates pass repeatedly.
 
+Each gate below records what its evidence actually covers. "Passing" means the
+listed run reproduces, not that the subsystem is finished.
+
 ## Gate 0 — protocol substrate
 
 - protocol parser rejects malformed/stale-version requests
@@ -9,6 +12,14 @@ Tool count is not a release criterion. RoboVision advances when end-to-end gates
 - capability discovery
 - editor-thread rule documented and enforced by architecture
 - host-independent CI green
+
+`tests/blender/gate0_transport.py` drives a live host over TCP with the shipped
+`RoboVisionClient` rather than calling `dispatch` in-process: capability
+discovery, typed errors surviving the wire, optimistic concurrency, 40
+sequential calls on one connection, two pipelined requests in a single packet,
+malformed JSON, and an oversized request. The worker thread performs socket I/O
+only while Blender's main thread pumps `poll()`, so the editor-thread rule holds
+under test.
 
 ## Gate 1 — Blender closed loop
 
@@ -28,6 +39,49 @@ Starting from a known `.blend` fixture, an external client must perform the foll
 12. prove the begin fingerprint is restored
 
 Run the cycle repeatedly. Fail on crash, leaked objects, duplicate IDs, stale element acceptance, rollback mismatch, or context-dependent nondeterminism.
+
+### Negative paths — `tests/blender/gate1_adversarial.py`
+
+The happy path does not decide whether an agent can trust the host. These do:
+
+1. a mutation that fails halfway leaves no partial state and reports its recovery
+2. a mutation carrying a drifted `if_revision` is refused and changes nothing
+3. a topology-indexed mutation carrying a stale revision is refused, and the
+   revision advances after an out-of-band edit
+4. no topology-indexed mesh mutation runs without `expected_mesh_revision`
+5. identity survives datablock copy, `object.duplicate` and the operator path,
+   and the original keeps the id the agent is holding
+6. Edit Mode mutation is refused rather than silently discarded on mode exit
+7. rollback restores modifier settings, not merely modifier presence
+8. an out-of-band edit during a transaction blocks automatic rollback until forced
+9. rollback leaves objects the transaction never touched byte-identical
+
+### Repeatability — `tests/blender/gate1_soak.py`
+
+One green run proves almost nothing. The soak repeats the full cycle against a
+single long-lived Blender session and runtime, asserting per cycle that the
+fingerprint returns to baseline, no datablocks leak, identities stay unique with
+no repairs required, the revision advances, and a bystander object created
+before the run is unchanged after it.
+
+### Evidence on record
+
+| run | editor | result |
+| --- | --- | --- |
+| gate0/1/1-adversarial/1-soak/2 | Blender 5.2.1 LTS, Linux CI | pass |
+| gate0/1/1-adversarial/1-soak/2 | Blender 5.1.2, Windows | pass |
+| soak 500 cycles | Blender 5.1.2, Windows | pass, mean 47.8ms, max 55.0ms |
+| soak 250 cycles | Blender 5.2.1 LTS, Linux CI | pass, mean 35.1ms, max 40.9ms |
+
+The Gate 1 baseline fingerprint is identical on both platforms and versions.
+
+### Not yet proven at Gate 1
+
+- undo-driven recovery outside Object Mode; the host reports `RECOVERY_UNSAFE`
+  rather than attempting it
+- linked-library and multi-scene identity beyond the derived-id path
+- concurrent clients issuing interleaved mutations
+- behaviour across file load/save and across Blender restarts
 
 ## Gate 2 — perception bundle
 
