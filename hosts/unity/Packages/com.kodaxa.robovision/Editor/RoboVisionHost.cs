@@ -12,7 +12,9 @@ namespace Kodaxa.RoboVision.Editor
     {
         public readonly string Code;
         public readonly bool Retryable;
-        public readonly JToken Data;
+        // Deliberately shadows Exception.Data: this carries the structured
+        // RoboVision error payload, not the base class's IDictionary.
+        public new readonly JToken Data;
 
         public RoboVisionException(string code, string message, bool retryable = false, JToken data = null) : base(message)
         {

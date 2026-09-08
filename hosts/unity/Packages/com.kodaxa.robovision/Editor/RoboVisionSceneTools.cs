@@ -152,10 +152,10 @@ namespace Kodaxa.RoboVision.Editor
                 if (resolved == null) throw new RoboVisionException("NOT_FOUND", "Unity object no longer resolves: " + reference);
                 return resolved;
             }
-            if (reference.StartsWith("unity:instance:", StringComparison.Ordinal) && Int32.TryParse(reference.Substring("unity:instance:".Length), out var instanceId))
+            if (reference.StartsWith(RoboVisionSessionHandles.Prefix, StringComparison.Ordinal))
             {
-                var resolved = EditorUtility.InstanceIDToObject(instanceId) as GameObject;
-                if (resolved == null) throw new RoboVisionException("NOT_FOUND", "Unity instance no longer resolves: " + reference);
+                var resolved = RoboVisionSessionHandles.Resolve(reference) as GameObject;
+                if (resolved == null) throw new RoboVisionException("NOT_FOUND", "Unity session handle no longer resolves: " + reference);
                 return resolved;
             }
             throw new RoboVisionException("INVALID_PARAMS", "object must be a RoboVision Unity id");
@@ -171,7 +171,7 @@ namespace Kodaxa.RoboVision.Editor
                 return "unity:" + text;
             }
             persistent = false;
-            return "unity:instance:" + obj.GetInstanceID();
+            return RoboVisionSessionHandles.Token(obj);
         }
 
         private static JObject CaptureState()

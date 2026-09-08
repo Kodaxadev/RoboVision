@@ -13,3 +13,4 @@ Thumbs.db
 *.blend2
 *.tmp
 artifacts/
+.unity-compile-refs/
