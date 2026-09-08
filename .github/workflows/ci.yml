@@ -18,3 +18,14 @@ jobs:
       - run: python -m pip install -e .[dev]
       - run: python -m compileall -q robovision hosts/blender/robovision_blender
       - run: pytest
+
+  mcp-adapter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .[dev,mcp]
+      - run: python -m compileall -q robovision
+      - run: pytest tests/test_protocol.py tests/test_canonical.py tests/test_mcp_adapter.py
