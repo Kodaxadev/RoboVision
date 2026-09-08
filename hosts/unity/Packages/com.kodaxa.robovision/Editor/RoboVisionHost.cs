@@ -191,7 +191,9 @@ namespace Kodaxa.RoboVision.Editor
             _dirty = false;
         }
 
-        private JObject Dispatch(JObject raw)
+        // internal so the package's EditMode tests can drive the host through the
+        // same entry point the transport uses, rather than a test-only shim.
+        internal JObject Dispatch(JObject raw)
         {
             var watch = Stopwatch.StartNew();
             var requestId = raw.Value<string>("id") ?? "invalid";
