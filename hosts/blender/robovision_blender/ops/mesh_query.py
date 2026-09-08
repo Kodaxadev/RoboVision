@@ -49,7 +49,9 @@ def _point(obj, point: Vector, space: str) -> Vector:
 
 def _normal(obj, normal: Vector, space: str) -> Vector:
     if space == "WORLD":
-        normal = obj.matrix_world.to_3x3().inverted().transposed() @ normal
+        # Use the inverse-transpose for normals, but tolerate intentionally
+        # singular transforms (for example a zero-scaled proxy object).
+        normal = obj.matrix_world.to_3x3().inverted_safe().transposed() @ normal
     if normal.length_squared:
         normal.normalize()
     return normal
@@ -62,6 +64,8 @@ def _bounds_filter(point: Vector, raw: Any) -> bool:
         raise HostError("INVALID_PARAMS", "bounds must be an object with optional min/max")
     minimum = _vec3(raw.get("min", [-inf, -inf, -inf]), "bounds.min")
     maximum = _vec3(raw.get("max", [inf, inf, inf]), "bounds.max")
+    if any(minimum[index] > maximum[index] for index in range(3)):
+        raise HostError("INVALID_PARAMS", "bounds.min cannot exceed bounds.max")
     return all(minimum[i] <= point[i] <= maximum[i] for i in range(3))
 
 
@@ -238,7 +242,8 @@ def components(params, _runtime):
         bm.faces.ensure_lookup_table()
         unseen = set(bm.verts)
         output: list[dict[str, Any]] = []
-        while unseen and len(output) < max_components:
+        total_components = 0
+        while unseen:
             seed = min(unseen, key=lambda vert: vert.index)
             queue = deque([seed])
             component_verts = []
@@ -251,6 +256,10 @@ def components(params, _runtime):
                     if other in unseen:
                         unseen.remove(other)
                         queue.append(other)
+
+            total_components += 1
+            if len(output) >= max_components:
+                continue
 
             vert_set = set(component_verts)
             edge_set = {edge for vert in component_verts for edge in vert.link_edges if edge.verts[0] in vert_set and edge.verts[1] in vert_set}
@@ -278,8 +287,8 @@ def components(params, _runtime):
             "object": object_id(obj),
             "mesh_revision": mesh_revision(obj),
             "space": space,
-            "component_count": len(output) + (1 if unseen else 0),
-            "truncated": bool(unseen),
+            "component_count": total_components,
+            "truncated": total_components > len(output),
             "components": output,
         }
     finally:
