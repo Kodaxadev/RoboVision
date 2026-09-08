@@ -114,19 +114,27 @@ class RoboVisionRuntime:
         self._last_snapshot = current
         self._dirty = False
 
-    def current_snapshot(self) -> dict[str, Any]:
-        """Return a deep snapshot, reusing the one taken for revision tracking.
+    def resync(self) -> dict[str, Any]:
+        """Re-read the scene authoritatively before a mutation is allowed to run.
 
-        Deep snapshots are the expensive part of a mutation, and dispatch already
-        computes one to detect out-of-band edits. Recomputing an identical
-        snapshot for the pre-operation checkpoint would double that cost for
-        every mutating call.
+        `depsgraph_update_post` is a notification, not a guarantee: a script or
+        another add-on can change datablocks and the handler may not have run by
+        the time the next request is dispatched. Trusting the dirty flag here
+        would let a mutation checkpoint against a scene that no longer exists and
+        would let a stale `if_revision` pass the concurrency check. Mutations
+        therefore pay for one honest deep read, which also serves as their
+        recovery checkpoint.
         """
-        if self._dirty or self._last_snapshot is None:
-            self._refresh_dirty_state()
-        if self._last_snapshot is None:
-            self._last_snapshot = scene_snapshot(level=DEEP)
-        return self._last_snapshot
+        current = scene_snapshot(level=DEEP)
+        fingerprint = current["fingerprint"]
+        if self._last_fingerprint is not None and fingerprint != self._last_fingerprint:
+            if self.transactions.active is not None:
+                self.transactions.mark_external_change(fingerprint)
+            self.revision += 1
+        self._last_fingerprint = fingerprint
+        self._last_snapshot = current
+        self._dirty = False
+        return current
 
     def _accept_own_mutation(self) -> None:
         current = scene_snapshot(level=DEEP)
@@ -185,6 +193,14 @@ class RoboVisionRuntime:
             spec = self.registry.get(method)
             if spec.requires_ui and bpy.app.background:
                 raise HostError("INVALID_CONTEXT", f"{method} requires an interactive Blender UI")
+
+            is_transaction_control = method.startswith("transaction.")
+            checkpoint: dict[str, Any] | None = None
+            if spec.mutating:
+                # Establish the truth first: the concurrency check below is only
+                # meaningful against a revision that reflects the scene as it is
+                # right now, not as the last notification left it.
+                checkpoint = self.resync()
             if spec.mutating and if_revision is not None and if_revision != self.revision:
                 raise HostError(
                     "STALE_REVISION",
@@ -193,9 +209,8 @@ class RoboVisionRuntime:
                     retryable=True,
                 )
 
-            is_transaction_control = method.startswith("transaction.")
-            if spec.mutating and not is_transaction_control:
-                mutation_before = self.transactions.prepare_mutation(method, self.current_snapshot())
+            if checkpoint is not None and not is_transaction_control:
+                mutation_before = self.transactions.prepare_mutation(method, checkpoint)
 
             result = spec.handler(params, self)
 

@@ -43,6 +43,23 @@ class TransactionManager:
             },
         )
 
+    @classmethod
+    def _seal_current_state(cls, message: str) -> bool:
+        """Make un-pushed changes an undo step so the next undo lands on target.
+
+        Blender's `ed.undo` steps to the state stored by the previous push, and
+        property writes made from Python are not pushed on their own. Undoing
+        straight after such a write therefore skips past the checkpoint instead
+        of returning to it, which is how a "restored" scene could come back
+        missing the object entirely. Sealing the live state first makes the
+        first undo land exactly on the checkpoint.
+        """
+        try:
+            cls._push_undo(message)
+        except HostError:
+            return False
+        return True
+
     @staticmethod
     def _push_undo(message: str) -> None:
         if not bpy.context.preferences.edit.use_global_undo:
@@ -53,10 +70,15 @@ class TransactionManager:
         if "FINISHED" not in result:
             raise HostError("HOST_EXCEPTION", "Blender failed to create an undo boundary")
 
-    def begin(self, tx_id: str, label: str) -> dict[str, Any]:
+    def begin(self, tx_id: str, label: str, before: dict[str, Any] | None = None) -> dict[str, Any]:
         if self.active is not None:
             raise HostError("TRANSACTION_ACTIVE", "a transaction is already active", data={"transaction": self.active.id})
-        before = scene_snapshot(level=DEEP)
+        # The caller passes the runtime's freshly resynced snapshot so the
+        # baseline and the runtime's revision tracking describe the same state.
+        # Taking an independent snapshot here could leave the runtime believing
+        # the scene changed between begin and the transaction's first mutation.
+        if before is None or before.get("level") != DEEP:
+            before = scene_snapshot(level=DEEP)
         self._push_undo(f"RoboVision BEGIN {label}")
         self.active = Transaction(tx_id, label, before)
         return {
@@ -90,6 +112,7 @@ class TransactionManager:
             return {"recovered": True, "undo_steps": 0, "fingerprint": target}
 
         self._assert_undo_is_safe("recover")
+        sealed = self._seal_current_state("RoboVision RECOVER")
         for step in range(1, max_steps + 1):
             if not bpy.ops.ed.undo.poll():
                 break
@@ -107,6 +130,7 @@ class TransactionManager:
                 "expected_fingerprint": target,
                 "actual_fingerprint": current["fingerprint"],
                 "max_steps": max_steps,
+                "sealed_before_undo": sealed,
             },
         )
 
@@ -141,6 +165,7 @@ class TransactionManager:
                 "forced_after_external_change": tx.external_change_fingerprint is not None,
             }
 
+        self._seal_current_state(f"RoboVision ROLLBACK {tx.label}")
         for step in range(1, max_steps + 1):
             if not bpy.ops.ed.undo.poll():
                 break
