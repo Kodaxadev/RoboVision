@@ -74,6 +74,17 @@ jobs:
             --python-exit-code 1 \
             --python tests/blender/semantic_query.py
 
+      - name: Run RoboVision Gate 0 transport over a real socket
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-gate0-transport
+          "${BLENDER_DIR}/blender" \
+            --background \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/gate0_transport.py
+
       - name: Run RoboVision Gate 1 in interactive Blender
         shell: bash
         run: |
@@ -84,6 +95,30 @@ jobs:
             --factory-startup \
             --python-exit-code 1 \
             --python tests/blender/gate1.py
+
+      - name: Run RoboVision Gate 1 adversarial paths in interactive Blender
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-gate1-adversarial
+          xvfb-run -a -s "-screen 0 1920x1080x24" \
+            "${BLENDER_DIR}/blender" \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/gate1_adversarial.py
+
+      - name: Soak RoboVision Gate 1 in interactive Blender
+        shell: bash
+        env:
+          ROBOVISION_SOAK_CYCLES: "250"
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-gate1-soak
+          xvfb-run -a -s "-screen 0 1920x1080x24" \
+            "${BLENDER_DIR}/blender" \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/gate1_soak.py
 
       - name: Run RoboVision Gate 2 perception in interactive Blender
         shell: bash
