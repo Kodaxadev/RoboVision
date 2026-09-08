@@ -1,0 +1,85 @@
+name: blender-integration
+
+on:
+  push:
+    paths:
+      - "hosts/blender/**"
+      - "tests/blender/**"
+      - ".github/workflows/blender-integration.yml"
+  pull_request:
+    paths:
+      - "hosts/blender/**"
+      - "tests/blender/**"
+      - ".github/workflows/blender-integration.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blender-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  blender-5-2-lts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      BLENDER_VERSION: "5.2.1"
+      BLENDER_SERIES: "5.2"
+      BLENDER_ARCHIVE: "blender-5.2.1-linux-x64.tar.xz"
+      BLENDER_DIR: ".cache/blender/blender-5.2.1-linux-x64"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Blender LTS
+        id: blender-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/blender
+          key: blender-linux-x64-5.2.1
+
+      - name: Download Blender 5.2.1 LTS
+        if: steps.blender-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .cache/blender
+          curl --fail --location --retry 4 --retry-delay 3 \
+            "https://download.blender.org/release/Blender${BLENDER_SERIES}/${BLENDER_ARCHIVE}" \
+            --output ".cache/blender/${BLENDER_ARCHIVE}"
+          tar -xJf ".cache/blender/${BLENDER_ARCHIVE}" -C .cache/blender
+          rm ".cache/blender/${BLENDER_ARCHIVE}"
+
+      - name: Install virtual display dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libx11-6 libxi6 libxfixes3 libxrender1 libxxf86vm1 \
+            libxkbcommon0 libxkbcommon-x11-0 libsm6 libice6
+
+      - name: Verify Blender version
+        shell: bash
+        run: |
+          "${BLENDER_DIR}/blender" --version | head -n 2
+
+      - name: Run RoboVision Gate 1 in interactive Blender
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-gate1
+          xvfb-run -a -s "-screen 0 1920x1080x24" \
+            "${BLENDER_DIR}/blender" \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/gate1.py
+
+      - name: Upload Gate 1 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-5.2.1-gate1-evidence
+          path: artifacts/blender-gate1/
+          if-no-files-found: warn
+          retention-days: 14
