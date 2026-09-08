@@ -104,7 +104,7 @@ per assembly.
 
 ### What a live Editor has proven
 
-63 tests, 59 passing, 4 skipped, exit 0, across three consecutive runs on
+66 tests, 62 passing, 4 skipped, exit 0, across three consecutive runs on
 **Unity 6000.6.0f1** (Windows):
 
 - the package is compiled and loaded by Unity, is reported by
@@ -128,6 +128,10 @@ per assembly.
   connection, typed errors over the wire, malformed traffic refused with the
   host still serving, two clients served independently — and the shipped
   `robovision.client.RoboVisionClient` creating a GameObject in the Editor
+- a Play Mode round trip, which reloads the scripting domain: the host answers
+  afterwards, a `GlobalObjectId` still resolves, a `unity:session:*` handle from
+  before the reload fails with `NOT_FOUND` rather than addressing something
+  else, and the listener is released and rebindable
 
 ### Defects this gate found
 
@@ -147,16 +151,28 @@ per assembly.
   rather than passing vacuously. A windowed run on the development machine
   crashed the Editor through commit-limit exhaustion, so the pixel-correspondence
   assertions have not executed. Compile success is not a substitute.
-- **Play Mode transitions, domain reload, package reload and editor restart.**
-  Session handles are documented as not surviving these; that has not been
-  demonstrated by a test.
+- **Editor restart and package reload.** Domain reload is covered by the Play
+  Mode tests above; a full editor restart and a package re-resolve are not.
+  `SessionState`, which the reload tests rely on, does not survive a restart
+  either, so that case needs a different harness.
 - **Unity 6000.0 at runtime.** The declared floor is compile-verified in CI
   only; every runtime result above is from 6000.6.0f1.
 - **Repeat volume.** Three consecutive runs, not the hundreds the Blender soak
   gate does.
 
-Gate 4 is therefore **not passed**. The substrate is runtime-proven; capture and
-lifecycle are not.
+### Identity contract
+
+| reference | issued for | survives domain reload | survives editor restart |
+| --- | --- | --- | --- |
+| `unity:GlobalObjectId_*` | objects in a saved scene or asset | yes, asserted | expected; not yet asserted |
+| `unity:session:<n>` | unsaved scene objects with no persistent id | no, asserted to fail `NOT_FOUND` | no |
+
+`object.inspect` reports `identity_persistent` so a client never has to infer
+which kind it holds.
+
+Gate 4 is therefore **not passed**. The substrate, identity lifecycle and domain
+reload behaviour are runtime-proven; SceneView capture, editor restart, the
+6000.0 runtime floor and repeat volume are not.
 
 ## Gate 5 — Blender → Unity lineage
 
