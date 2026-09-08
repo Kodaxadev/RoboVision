@@ -20,6 +20,7 @@ from robovision_blender.runtime import PROTOCOL_VERSION, RoboVisionRuntime  # no
 ARTIFACT_DIR = ROOT / "artifacts" / "blender-gate1"
 ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 TRACE_PATH = ARTIFACT_DIR / "trace.json"
+TRACE_CALLS: list[dict] = []
 
 
 class GateFailure(AssertionError):
@@ -49,7 +50,6 @@ def main() -> None:
     runtime._registered_tools = True
     runtime._refresh_dirty_state()
 
-    calls: list[dict] = []
     serial = 0
 
     def call(method: str, params: dict | None = None, *, if_revision: int | None = None, ok: bool = True) -> dict:
@@ -64,7 +64,7 @@ def main() -> None:
         if if_revision is not None:
             request["if_revision"] = if_revision
         response = runtime.dispatch(request)
-        calls.append({"request": request, "response": response})
+        TRACE_CALLS.append({"request": request, "response": response})
         if ok:
             expect(response.get("ok") is True, f"{method} failed: {response}")
         else:
@@ -74,11 +74,13 @@ def main() -> None:
     hello = call("system.hello")
     methods = {entry["name"] for entry in hello["result"]["capabilities"]}
     required = {
+        "system.method",
         "scene.snapshot",
         "scene.diff",
         "object.create",
         "object.transform",
         "mesh.inspect",
+        "mesh.query",
         "mesh.validate",
         "mesh.extrude_faces",
         "modifier.add",
@@ -89,6 +91,11 @@ def main() -> None:
     }
     expect(required.issubset(methods), f"missing Gate 1 methods: {sorted(required - methods)}")
     expect(hello["result"]["transport"]["python_worker_threads"] is False, "Blender host must not advertise worker-thread bpy execution")
+    expect(hello["result"]["discovery"]["schemas_on_demand"] is True, "host must advertise schema discovery")
+
+    method_doc = call("system.method", {"method": "mesh.query"})
+    expect(method_doc["result"]["params_schema"]["type"] == "object", "mesh.query did not publish a parameter schema")
+    expect("query" in method_doc["result"]["tags"], "mesh.query discovery tags are incomplete")
 
     baseline = call("scene.snapshot", {"deep": True})
     baseline_fp = baseline["result"]["fingerprint"]
@@ -115,12 +122,27 @@ def main() -> None:
     expect(validation["result"]["valid"] is True, "new cube failed mesh validation")
     expect(validation["result"]["manifold"] is True, "new cube must be manifold")
 
+    # Never guess a raw cube face index. Select the actual +Z face semantically
+    # and use the returned mesh revision as the topology handle for mutation.
+    top_face = call(
+        "mesh.query",
+        {
+            "object": object_ref,
+            "domain": "FACE",
+            "space": "OBJECT",
+            "normal": {"direction": [0.0, 0.0, 1.0], "min_dot": 0.999},
+            "sort_by": "-z",
+        },
+    )["result"]
+    expect(top_face["count"] == 1, f"expected one +Z cube face: {top_face}")
+    expect(top_face["mesh_revision"] == mesh_revision, "semantic query returned an unexpected mesh revision")
+
     extruded = call(
         "mesh.extrude_faces",
         {
             "object": object_ref,
-            "expected_mesh_revision": mesh_revision,
-            "face_indices": [0],
+            "expected_mesh_revision": top_face["mesh_revision"],
+            "face_indices": top_face["indices"],
             "translation": [0.0, 0.0, 0.5],
         },
         if_revision=runtime.revision,
@@ -148,7 +170,8 @@ def main() -> None:
     expect(applied_modifier["result"]["mesh_revision"] == extruded_revision + 1, "applying topology modifier did not advance mesh revision")
 
     post_edit_validation = call("mesh.validate", {"object": object_ref})
-    expect(post_edit_validation["result"]["valid"] is True, "edited mesh failed validation")
+    expect(post_edit_validation["result"]["valid"] is True, f"edited mesh failed validation: {post_edit_validation['result']['issues']}")
+    expect(post_edit_validation["result"]["manifold"] is True, f"edited mesh is non-manifold: {post_edit_validation['result']['issues']}")
     expect(post_edit_validation["result"]["counts"]["vertices"] > 8, "topology edits did not produce additional vertices")
 
     stale = call(
@@ -213,14 +236,14 @@ def main() -> None:
                 "protocol": PROTOCOL_VERSION,
                 "baseline_fingerprint": baseline_fp,
                 "final_fingerprint": restored["result"]["fingerprint"],
-                "calls": calls,
+                "calls": TRACE_CALLS,
             },
             indent=2,
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
-    print("ROBOVISION_GATE1_PASS", baseline_fp, "calls=", len(calls))
+    print("ROBOVISION_GATE1_PASS", baseline_fp, "calls=", len(TRACE_CALLS))
 
 
 try:
@@ -228,7 +251,10 @@ try:
 except Exception:
     traceback.print_exc()
     try:
-        TRACE_PATH.write_text(json.dumps({"error": traceback.format_exc()}, indent=2), encoding="utf-8")
+        TRACE_PATH.write_text(
+            json.dumps({"error": traceback.format_exc(), "calls": TRACE_CALLS}, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
     except Exception:
         pass
     raise
