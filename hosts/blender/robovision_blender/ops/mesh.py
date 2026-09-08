@@ -53,15 +53,34 @@ def elements(params, _runtime):
 
     if kind == "vertices":
         source = mesh.vertices
-        items = [{"index": v.index, "co": list(v.co), "normal": list(v.normal)} for v in source[offset : offset + limit]]
+        stop = min(len(source), offset + limit)
+        items = [
+            {"index": source[index].index, "co": list(source[index].co), "normal": list(source[index].normal)}
+            for index in range(min(offset, len(source)), stop)
+        ]
     elif kind == "edges":
         source = mesh.edges
-        items = [{"index": e.index, "vertices": list(e.vertices), "crease": float(getattr(e, "crease", 0.0))} for e in source[offset : offset + limit]]
+        stop = min(len(source), offset + limit)
+        items = [
+            {
+                "index": source[index].index,
+                "vertices": list(source[index].vertices),
+                "crease": float(getattr(source[index], "crease", 0.0)),
+            }
+            for index in range(min(offset, len(source)), stop)
+        ]
     elif kind == "faces":
         source = mesh.polygons
+        stop = min(len(source), offset + limit)
         items = [
-            {"index": p.index, "vertices": list(p.vertices), "normal": list(p.normal), "material_index": p.material_index, "area": float(p.area)}
-            for p in source[offset : offset + limit]
+            {
+                "index": source[index].index,
+                "vertices": list(source[index].vertices),
+                "normal": list(source[index].normal),
+                "material_index": source[index].material_index,
+                "area": float(source[index].area),
+            }
+            for index in range(min(offset, len(source)), stop)
         ]
     else:
         raise HostError("INVALID_PARAMS", "kind must be vertices, edges, or faces")
@@ -101,7 +120,14 @@ def validate(params, _runtime):
             "mesh_revision": mesh_revision(obj),
             "valid": not zero_edges and not degenerate_faces,
             "manifold": not non_manifold,
-            "counts": {"vertices": len(bm.verts), "edges": len(bm.edges), "faces": len(bm.faces), "triangles": triangles, "quads": quads, "ngons": len(ngons)},
+            "counts": {
+                "vertices": len(bm.verts),
+                "edges": len(bm.edges),
+                "faces": len(bm.faces),
+                "triangles": triangles,
+                "quads": quads,
+                "ngons": len(ngons),
+            },
             "issues": {
                 "non_manifold_edges": non_manifold,
                 "boundary_edges": boundary,
