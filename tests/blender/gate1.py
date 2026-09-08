@@ -149,6 +149,12 @@ def main() -> None:
     )
     extruded_revision = extruded["result"]["mesh_revision"]
     expect(extruded_revision == mesh_revision + 1, "topology revision did not advance after extrusion")
+    expect(extruded["result"]["created"]["vertices"], "extrusion did not return revision-scoped created vertices")
+    expect(extruded["result"]["created"]["faces"], "extrusion did not return revision-scoped created faces")
+
+    extruded_validation = call("mesh.validate", {"object": object_ref})
+    expect(extruded_validation["result"]["valid"] is True, f"extrusion produced invalid geometry: {extruded_validation['result']['issues']}")
+    expect(extruded_validation["result"]["manifold"] is True, f"extrusion retained non-manifold/internal geometry: {extruded_validation['result']['issues']}")
 
     added_modifier = call(
         "modifier.add",
@@ -167,6 +173,8 @@ def main() -> None:
         {"object": object_ref, "modifier": "RV_GateBevel"},
         if_revision=runtime.revision,
     )
+    expect(applied_modifier["result"]["applied"] == "RV_GateBevel", "modifier identity was lost during application")
+    expect(applied_modifier["result"]["applied_type"] == "BEVEL", "applied modifier type was not preserved")
     expect(applied_modifier["result"]["mesh_revision"] == extruded_revision + 1, "applying topology modifier did not advance mesh revision")
 
     post_edit_validation = call("mesh.validate", {"object": object_ref})
