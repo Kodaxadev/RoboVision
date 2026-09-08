@@ -33,9 +33,7 @@ namespace Kodaxa.RoboVision.Editor
         internal static string ComputeFingerprint()
         {
             var state = CaptureState();
-            var bytes = Encoding.UTF8.GetBytes(state.ToString(Formatting.None));
-            using (var sha = SHA256.Create())
-                return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+            return HashToken(state);
         }
 
         private static JObject Describe(RoboVisionHost host, JObject parameters)
@@ -191,8 +189,11 @@ namespace Kodaxa.RoboVision.Editor
                     .OrderBy(o => o.Value<string>("id"), StringComparer.Ordinal);
                 scenes.Add(new JObject
                 {
-                    ["name"] = scene.name, ["path"] = scene.path, ["build_index"] = scene.buildIndex,
-                    ["dirty"] = scene.isDirty, ["objects"] = new JArray(objects)
+                    ["name"] = scene.name,
+                    ["path"] = scene.path,
+                    ["build_index"] = scene.buildIndex,
+                    ["dirty"] = scene.isDirty,
+                    ["objects"] = new JArray(objects)
                 });
             }
             return new JObject { ["scenes"] = scenes };
@@ -203,15 +204,48 @@ namespace Kodaxa.RoboVision.Editor
             var id = IdFor(go, out var persistent);
             var t = go.transform;
             var r = t.localRotation;
+            var components = go.GetComponents<Component>().Where(component => component != null).ToArray();
+            var componentTypes = components.Select(component => component.GetType().FullName).OrderBy(name => name, StringComparer.Ordinal);
+            var componentState = components.Select(ComponentState).OrderBy(state => state.Value<string>("id"), StringComparer.Ordinal);
             return new JObject
             {
-                ["id"] = id, ["identity_persistent"] = persistent, ["name"] = go.name,
-                ["scene"] = go.scene.path, ["active"] = go.activeSelf, ["layer"] = go.layer, ["tag"] = go.tag,
+                ["id"] = id,
+                ["identity_persistent"] = persistent,
+                ["name"] = go.name,
+                ["scene"] = go.scene.path,
+                ["active"] = go.activeSelf,
+                ["layer"] = go.layer,
+                ["tag"] = go.tag,
                 ["parent"] = t.parent ? IdFor(t.parent.gameObject, out _) : null,
                 ["local_position"] = new JArray(t.localPosition.x, t.localPosition.y, t.localPosition.z),
                 ["local_rotation"] = new JArray(r.x, r.y, r.z, r.w),
                 ["local_scale"] = new JArray(t.localScale.x, t.localScale.y, t.localScale.z),
-                ["components"] = new JArray(go.GetComponents<Component>().Where(c => c != null).Select(c => c.GetType().FullName).OrderBy(x => x, StringComparer.Ordinal))
+                ["components"] = new JArray(componentTypes),
+                ["component_state"] = new JArray(componentState)
+            };
+        }
+
+        private static JObject ComponentState(Component component)
+        {
+            var id = IdFor(component, out var persistent);
+            string serialized;
+            try
+            {
+                serialized = EditorJsonUtility.ToJson(component, false) ?? String.Empty;
+            }
+            catch (Exception ex)
+            {
+                // A component that Unity cannot serialize must still perturb the
+                // scene fingerprint deterministically instead of silently
+                // disappearing from transaction/revision accounting.
+                serialized = "<serialization-error>:" + ex.GetType().FullName + ":" + ex.Message;
+            }
+            return new JObject
+            {
+                ["id"] = id,
+                ["identity_persistent"] = persistent,
+                ["type"] = component.GetType().FullName,
+                ["serialized_sha256"] = HashString(serialized)
             };
         }
 
@@ -227,11 +261,16 @@ namespace Kodaxa.RoboVision.Editor
             return result;
         }
 
-        private static string HashToken(JToken token)
+        private static string HashString(string value)
         {
-            var bytes = Encoding.UTF8.GetBytes(token.ToString(Formatting.None));
+            var bytes = Encoding.UTF8.GetBytes(value ?? String.Empty);
             using (var sha = SHA256.Create())
                 return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+        }
+
+        private static string HashToken(JToken token)
+        {
+            return HashString(token.ToString(Formatting.None));
         }
     }
 }
