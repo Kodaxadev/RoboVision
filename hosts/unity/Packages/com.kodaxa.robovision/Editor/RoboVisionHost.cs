@@ -33,15 +33,35 @@ namespace Kodaxa.RoboVision.Editor
             public bool RequiresUi;
             public string Stability;
             public bool TransactionControl;
+            public string Summary;
+            public string[] Tags;
+            public JObject ParamsSchema;
 
-            public JObject Describe() => new JObject
+            public JObject Describe(bool includeSchema = false)
             {
-                ["name"] = Name,
-                ["mutating"] = Mutating,
-                ["evidence"] = Evidence,
-                ["requires_ui"] = RequiresUi,
-                ["stability"] = Stability
-            };
+                var result = new JObject
+                {
+                    ["name"] = Name,
+                    ["mutating"] = Mutating,
+                    ["evidence"] = Evidence,
+                    ["requires_ui"] = RequiresUi,
+                    ["stability"] = Stability,
+                    ["summary"] = Summary ?? String.Empty,
+                    ["tags"] = new JArray(Tags ?? Array.Empty<string>())
+                };
+                if (includeSchema)
+                {
+                    result["params_schema"] = ParamsSchema != null
+                        ? ParamsSchema.DeepClone()
+                        : new JObject
+                        {
+                            ["type"] = "object",
+                            ["additionalProperties"] = true,
+                            ["description"] = "This method has not yet published a strict parameter schema."
+                        };
+                }
+                return result;
+            }
         }
 
         public const string ProtocolVersion = "1.0";
@@ -76,9 +96,13 @@ namespace Kodaxa.RoboVision.Editor
             bool evidence = false,
             bool requiresUi = false,
             string stability = "alpha",
-            bool transactionControl = false)
+            bool transactionControl = false,
+            string summary = null,
+            string[] tags = null,
+            JObject paramsSchema = null)
         {
             if (_tools.ContainsKey(name)) throw new InvalidOperationException("Duplicate RoboVision tool: " + name);
+            var documented = RoboVisionToolDocs.Get(name);
             _tools[name] = new ToolSpec
             {
                 Name = name,
@@ -87,7 +111,10 @@ namespace Kodaxa.RoboVision.Editor
                 Evidence = evidence,
                 RequiresUi = requiresUi,
                 Stability = stability,
-                TransactionControl = transactionControl
+                TransactionControl = transactionControl,
+                Summary = summary ?? documented?.Summary ?? String.Empty,
+                Tags = tags ?? documented?.Tags ?? Array.Empty<string>(),
+                ParamsSchema = paramsSchema ?? (documented?.ParamsSchema != null ? (JObject)documented.ParamsSchema.DeepClone() : null)
             };
         }
 
@@ -306,6 +333,68 @@ namespace Kodaxa.RoboVision.Editor
             };
         }
 
+        private JObject CapabilityCatalog(JObject parameters)
+        {
+            var queryToken = parameters["query"];
+            var prefixToken = parameters["prefix"];
+            if (queryToken != null && queryToken.Type != JTokenType.String)
+                throw new RoboVisionException("INVALID_PARAMS", "query must be a string");
+            if (prefixToken != null && prefixToken.Type != JTokenType.String)
+                throw new RoboVisionException("INVALID_PARAMS", "prefix must be a string");
+            var query = parameters.Value<string>("query") ?? String.Empty;
+            var prefix = parameters.Value<string>("prefix") ?? String.Empty;
+            var includeSchema = parameters.Value<bool?>("include_schema") ?? false;
+            var offset = Math.Max(0, parameters.Value<int?>("offset") ?? 0);
+            var limit = Math.Max(1, Math.Min(500, parameters.Value<int?>("limit") ?? 100));
+
+            var requiredTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (parameters["tags"] != null)
+            {
+                if (!(parameters["tags"] is JArray tagArray) || tagArray.Any(token => token.Type != JTokenType.String))
+                    throw new RoboVisionException("INVALID_PARAMS", "tags must be an array of strings");
+                foreach (var tag in tagArray.Values<string>()) requiredTags.Add(tag);
+            }
+
+            IEnumerable<ToolSpec> matches = _tools.Values.OrderBy(tool => tool.Name, StringComparer.Ordinal);
+            if (!String.IsNullOrWhiteSpace(prefix))
+                matches = matches.Where(tool => tool.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+            if (requiredTags.Count > 0)
+                matches = matches.Where(tool => requiredTags.IsSubsetOf(new HashSet<string>(tool.Tags ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase)));
+            if (!String.IsNullOrWhiteSpace(query))
+            {
+                matches = matches.Where(tool =>
+                    tool.Name.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    (tool.Summary ?? String.Empty).IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    (tool.Tags ?? Array.Empty<string>()).Any(tag => tag.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0));
+            }
+
+            var list = matches.ToList();
+            var page = list.Skip(offset).Take(limit).Select(tool => tool.Describe(includeSchema));
+            return new JObject
+            {
+                ["total"] = list.Count,
+                ["offset"] = offset,
+                ["limit"] = limit,
+                ["has_more"] = offset + Math.Min(limit, Math.Max(0, list.Count - offset)) < list.Count,
+                ["methods"] = new JArray(page)
+            };
+        }
+
+        private JObject DescribeMethod(JObject parameters)
+        {
+            var method = parameters.Value<string>("method");
+            if (String.IsNullOrWhiteSpace(method))
+                throw new RoboVisionException("INVALID_PARAMS", "method is required");
+            if (!_tools.TryGetValue(method, out var spec))
+                throw new RoboVisionException("UNKNOWN_METHOD", "unknown method: " + method);
+            return spec.Describe(true);
+        }
+
+        private JArray CompactCapabilities()
+        {
+            return new JArray(_tools.Values.OrderBy(tool => tool.Name, StringComparer.Ordinal).Select(tool => tool.Describe(false)));
+        }
+
         private void RegisterSystemTools()
         {
             AddTool(
@@ -314,45 +403,60 @@ namespace Kodaxa.RoboVision.Editor
                 stability: "beta");
             AddTool(
                 "system.capabilities",
-                _ => new JObject { ["methods"] = new JArray(_tools.Values.OrderBy(t => t.Name).Select(t => t.Describe())) },
+                CapabilityCatalog,
+                stability: "beta");
+            AddTool(
+                "system.method",
+                DescribeMethod,
                 stability: "beta");
             AddTool(
                 "system.hello",
-                _ => new JObject
+                _ =>
                 {
-                    ["protocol"] = ProtocolVersion,
-                    ["host"] = new JObject
+                    var capabilities = CompactCapabilities();
+                    return new JObject
                     {
-                        ["name"] = "unity",
-                        ["implementation"] = "robovision_unity",
-                        ["version"] = HostVersion
-                    },
-                    ["editor"] = new JObject
-                    {
-                        ["name"] = "Unity",
-                        ["version"] = Application.unityVersion,
-                        ["playing"] = EditorApplication.isPlaying
-                    },
-                    ["revision"] = _revision,
-                    ["capabilities"] = new JArray(_tools.Values.OrderBy(t => t.Name).Select(t => t.Describe())),
-                    ["transport"] = new JObject
-                    {
-                        ["kind"] = "tcp-jsonl",
-                        ["bind"] = "127.0.0.1",
-                        ["port"] = Port,
-                        ["editor_thread_dispatch"] = true
-                    },
-                    ["security"] = new JObject
-                    {
-                        ["loopback_only"] = true,
-                        ["arbitrary_code_enabled"] = false
-                    },
-                    ["transaction"] = new JObject
-                    {
-                        ["active"] = Transactions.Active,
-                        ["external_change_protection"] = true,
-                        ["failed_operation_recovery"] = true
-                    }
+                        ["protocol"] = ProtocolVersion,
+                        ["host"] = new JObject
+                        {
+                            ["name"] = "unity",
+                            ["implementation"] = "robovision_unity",
+                            ["version"] = HostVersion
+                        },
+                        ["editor"] = new JObject
+                        {
+                            ["name"] = "Unity",
+                            ["version"] = Application.unityVersion,
+                            ["playing"] = EditorApplication.isPlaying
+                        },
+                        ["revision"] = _revision,
+                        ["capability_count"] = capabilities.Count,
+                        ["capabilities"] = capabilities,
+                        ["discovery"] = new JObject
+                        {
+                            ["search"] = "system.capabilities",
+                            ["describe_exact"] = "system.method",
+                            ["schemas_on_demand"] = true
+                        },
+                        ["transport"] = new JObject
+                        {
+                            ["kind"] = "tcp-jsonl",
+                            ["bind"] = "127.0.0.1",
+                            ["port"] = Port,
+                            ["editor_thread_dispatch"] = true
+                        },
+                        ["security"] = new JObject
+                        {
+                            ["loopback_only"] = true,
+                            ["arbitrary_code_enabled"] = false
+                        },
+                        ["transaction"] = new JObject
+                        {
+                            ["active"] = Transactions.Active,
+                            ["external_change_protection"] = true,
+                            ["failed_operation_recovery"] = true
+                        }
+                    };
                 },
                 stability: "beta");
         }
