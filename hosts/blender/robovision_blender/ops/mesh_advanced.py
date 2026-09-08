@@ -34,8 +34,8 @@ def _commit(obj, bm, *, topology: bool = True):
     return result
 
 
-def subdivide_edges(params, _runtime):
-    obj = _mesh_object(params.get("object"))
+def subdivide_edges(params, runtime):
+    obj = _mesh_object(params.get("object"), mutating=True, runtime=runtime)
     assert_mesh_revision(obj, params.get("expected_mesh_revision"))
     cuts = int(params.get("cuts", 1))
     if cuts < 1 or cuts > 1000:
@@ -64,8 +64,8 @@ def subdivide_edges(params, _runtime):
         bm.free()
 
 
-def inset_faces(params, _runtime):
-    obj = _mesh_object(params.get("object"))
+def inset_faces(params, runtime):
+    obj = _mesh_object(params.get("object"), mutating=True, runtime=runtime)
     assert_mesh_revision(obj, params.get("expected_mesh_revision"))
     thickness = float(params.get("thickness", 0.0))
     depth = float(params.get("depth", 0.0))
@@ -104,8 +104,8 @@ def inset_faces(params, _runtime):
         bm.free()
 
 
-def bridge_loops(params, _runtime):
-    obj = _mesh_object(params.get("object"))
+def bridge_loops(params, runtime):
+    obj = _mesh_object(params.get("object"), mutating=True, runtime=runtime)
     assert_mesh_revision(obj, params.get("expected_mesh_revision"))
     bm = bmesh.new()
     try:
@@ -128,8 +128,8 @@ def bridge_loops(params, _runtime):
         bm.free()
 
 
-def merge_by_distance(params, _runtime):
-    obj = _mesh_object(params.get("object"))
+def merge_by_distance(params, runtime):
+    obj = _mesh_object(params.get("object"), mutating=True, runtime=runtime)
     assert_mesh_revision(obj, params.get("expected_mesh_revision"))
     distance = float(params.get("distance", 0.0001))
     if distance < 0:
@@ -153,8 +153,8 @@ def merge_by_distance(params, _runtime):
         bm.free()
 
 
-def triangulate(params, _runtime):
-    obj = _mesh_object(params.get("object"))
+def triangulate(params, runtime):
+    obj = _mesh_object(params.get("object"), mutating=True, runtime=runtime)
     assert_mesh_revision(obj, params.get("expected_mesh_revision"))
     quad_method = str(params.get("quad_method", "BEAUTY")).upper()
     ngon_method = str(params.get("ngon_method", "BEAUTY")).upper()
@@ -175,8 +175,9 @@ def triangulate(params, _runtime):
         bm.free()
 
 
-def recalc_normals(params, _runtime):
-    obj = _mesh_object(params.get("object"))
+def recalc_normals(params, runtime):
+    obj = _mesh_object(params.get("object"), mutating=True, runtime=runtime)
+    assert_mesh_revision(obj, params.get("expected_mesh_revision"))
     bm = bmesh.new()
     try:
         bm.from_mesh(obj.data)
@@ -190,8 +191,8 @@ def recalc_normals(params, _runtime):
         bm.free()
 
 
-def bisect_plane(params, _runtime):
-    obj = _mesh_object(params.get("object"))
+def bisect_plane(params, runtime):
+    obj = _mesh_object(params.get("object"), mutating=True, runtime=runtime)
     assert_mesh_revision(obj, params.get("expected_mesh_revision"))
     plane_co = params.get("plane_co", [0.0, 0.0, 0.0])
     plane_no = params.get("plane_no")
@@ -222,8 +223,8 @@ def bisect_plane(params, _runtime):
         bm.free()
 
 
-def solidify(params, _runtime):
-    obj = _mesh_object(params.get("object"))
+def solidify(params, runtime):
+    obj = _mesh_object(params.get("object"), mutating=True, runtime=runtime)
     assert_mesh_revision(obj, params.get("expected_mesh_revision"))
     thickness = float(params.get("thickness", 0.01))
     if thickness == 0:
@@ -241,8 +242,8 @@ def solidify(params, _runtime):
         bm.free()
 
 
-def symmetrize(params, _runtime):
-    obj = _mesh_object(params.get("object"))
+def symmetrize(params, runtime):
+    obj = _mesh_object(params.get("object"), mutating=True, runtime=runtime)
     assert_mesh_revision(obj, params.get("expected_mesh_revision"))
     direction = str(params.get("direction", "-X")).upper()
     if direction not in {"-X", "-Y", "-Z", "X", "Y", "Z"}:

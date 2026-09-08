@@ -8,17 +8,36 @@ from ..identity import assert_mesh_revision, bump_mesh_revision, mesh_revision, 
 from ..registry import HostError
 
 
-def _mesh_object(ref):
+def _mesh_object(ref, *, mutating: bool = False, runtime=None):
     obj = resolve_object(ref)
     if obj.type != "MESH" or obj.data is None:
         raise HostError("INVALID_PARAMS", "object is not a mesh")
     if obj.data.library is not None:
         raise HostError("UNSUPPORTED", "linked-library mesh data is read-only")
+    if obj.mode == "EDIT":
+        if mutating:
+            # BMesh writes through obj.data are discarded when Blender leaves
+            # Edit Mode, so a "successful" mutation would silently vanish.
+            raise HostError(
+                "INVALID_CONTEXT",
+                "object is in Edit Mode; leave Edit Mode before structured mesh mutation",
+                data={"object": object_id(obj), "mode": obj.mode},
+                retryable=True,
+            )
+        # Reads publish the live edit-mode BMesh so the agent never reasons
+        # about the pre-Edit-Mode copy of the geometry. That write changes the
+        # datablock, so the runtime must re-fingerprint before it checkpoints
+        # anything; otherwise the next mutation would recover to a stale state.
+        try:
+            if obj.update_from_editmode() and runtime is not None:
+                runtime.mark_dirty()
+        except (AttributeError, RuntimeError):
+            pass
     return obj
 
 
-def inspect(params, _runtime):
-    obj = _mesh_object(params.get("object"))
+def inspect(params, runtime):
+    obj = _mesh_object(params.get("object"), runtime=runtime)
     mesh = obj.data
     result = {
         "object": object_id(obj),
@@ -44,8 +63,8 @@ def inspect(params, _runtime):
     return result
 
 
-def elements(params, _runtime):
-    obj = _mesh_object(params.get("object"))
+def elements(params, runtime):
+    obj = _mesh_object(params.get("object"), runtime=runtime)
     kind = str(params.get("kind", "vertices")).lower()
     offset = max(0, int(params.get("offset", 0)))
     limit = max(1, min(2000, int(params.get("limit", 500))))
@@ -97,8 +116,8 @@ def elements(params, _runtime):
     }
 
 
-def validate(params, _runtime):
-    obj = _mesh_object(params.get("object"))
+def validate(params, runtime):
+    obj = _mesh_object(params.get("object"), runtime=runtime)
     bm = bmesh.new()
     try:
         bm.from_mesh(obj.data)
@@ -142,8 +161,8 @@ def validate(params, _runtime):
         bm.free()
 
 
-def bevel(params, _runtime):
-    obj = _mesh_object(params.get("object"))
+def bevel(params, runtime):
+    obj = _mesh_object(params.get("object"), mutating=True, runtime=runtime)
     assert_mesh_revision(obj, params.get("expected_mesh_revision"))
     indices = params.get("edge_indices")
     if not isinstance(indices, list) or not indices:
@@ -178,8 +197,8 @@ def bevel(params, _runtime):
     return {"object": object_id(obj), "mesh_revision": bump_mesh_revision(obj)}
 
 
-def extrude_faces(params, _runtime):
-    obj = _mesh_object(params.get("object"))
+def extrude_faces(params, runtime):
+    obj = _mesh_object(params.get("object"), mutating=True, runtime=runtime)
     assert_mesh_revision(obj, params.get("expected_mesh_revision"))
     indices = params.get("face_indices")
     translation = params.get("translation", [0.0, 0.0, 0.0])

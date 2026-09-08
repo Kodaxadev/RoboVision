@@ -14,15 +14,45 @@ from ..identity import resolve_object
 from ..registry import HostError
 
 
+PNG_MAGIC = bytes.fromhex("89504e470d0a1a0a")
+
+
 def _matrix(value):
     return [[float(component) for component in row] for row in value]
 
 
+def _png_size(path) -> dict | None:
+    """Read width/height straight from the PNG IHDR chunk.
+
+    The artifact's real pixel dimensions are provenance: `render.opengl` writes
+    at the scene render resolution, which is not the interactive region size.
+    """
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(24)
+    except OSError:
+        return None
+    if len(header) < 24 or header[:8] != PNG_MAGIC or header[12:16] != b"IHDR":
+        return None
+    return {
+        "width": int.from_bytes(header[16:20], "big"),
+        "height": int.from_bytes(header[20:24], "big"),
+    }
+
+
 def _metadata(area, region, space, runtime):
     rv3d = space.region_3d
+    render = bpy.context.scene.render
+    scale = max(1, int(render.resolution_percentage)) / 100.0
     return {
         "scene_revision": runtime.revision,
+        "region": {"width": int(region.width), "height": int(region.height)},
         "viewport": {"width": int(region.width), "height": int(region.height)},
+        "render_output": {
+            "width": int(render.resolution_x * scale),
+            "height": int(render.resolution_y * scale),
+            "resolution_percentage": int(render.resolution_percentage),
+        },
         "projection": rv3d.view_perspective,
         "view_location": list(rv3d.view_location),
         "view_rotation": list(rv3d.view_rotation),
@@ -67,7 +97,16 @@ def axis(params, runtime):
     with view3d_override() as (area, region, space):
         if not bpy.ops.view3d.view_axis.poll():
             raise HostError("INVALID_CONTEXT", "view-axis operation is unavailable")
-        result = bpy.ops.view3d.view_axis(type=axis_name, align_active=False)
+        # Smooth view animates the transition, so metadata captured immediately
+        # after the operator could describe a view still in flight. Evidence has
+        # to match the frame it claims to describe.
+        preferences = bpy.context.preferences.view
+        smooth_view = preferences.smooth_view
+        try:
+            preferences.smooth_view = 0
+            result = bpy.ops.view3d.view_axis(type=axis_name, align_active=False)
+        finally:
+            preferences.smooth_view = smooth_view
         if "FINISHED" not in result:
             raise HostError("HOST_EXCEPTION", "Blender did not change the viewport axis")
         return _metadata(area, region, space, runtime)
@@ -118,10 +157,17 @@ def capture(params, runtime):
 
     if not os.path.exists(output_path):
         raise HostError("HOST_EXCEPTION", "viewport capture completed but no artifact was written")
-    return {
-        "artifact": {"kind": "image", "mime": "image/png", "path": str(output_path), "bytes": os.path.getsize(output_path)},
-        "view": metadata,
+    artifact = {
+        "kind": "image",
+        "mime": "image/png",
+        "path": str(output_path),
+        "bytes": os.path.getsize(output_path),
     }
+    size = _png_size(output_path)
+    if size is not None:
+        artifact.update(size)
+        metadata["image"] = size
+    return {"artifact": artifact, "view": metadata}
 
 
 def register(registry) -> None:

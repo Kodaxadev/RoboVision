@@ -6,7 +6,7 @@ from typing import Any
 import bpy
 
 from .registry import HostError
-from .snapshots import scene_snapshot
+from .snapshots import DEEP, scene_snapshot
 
 
 @dataclass(slots=True)
@@ -22,6 +22,28 @@ class TransactionManager:
         self.active: Transaction | None = None
 
     @staticmethod
+    def _assert_undo_is_safe(action: str) -> None:
+        """Refuse to drive global undo from a mode where it means something else.
+
+        `ed.undo` in Edit/Sculpt/Pose mode walks that mode's own undo steps, so a
+        recovery loop can shred live edits or drop out of the mode entirely
+        instead of restoring the object state RoboVision checkpointed. Reporting
+        the situation is the honest outcome; guessing is not.
+        """
+        mode = bpy.context.mode
+        if mode == "OBJECT":
+            return
+        raise HostError(
+            "RECOVERY_UNSAFE",
+            f"cannot {action} through global undo while Blender is in {mode}",
+            data={
+                "mode": mode,
+                "required_mode": "OBJECT",
+                "remedy": "Return Blender to Object Mode, then retry the rollback or recovery.",
+            },
+        )
+
+    @staticmethod
     def _push_undo(message: str) -> None:
         if not bpy.context.preferences.edit.use_global_undo:
             raise HostError("UNSUPPORTED", "Blender Global Undo is disabled")
@@ -34,7 +56,7 @@ class TransactionManager:
     def begin(self, tx_id: str, label: str) -> dict[str, Any]:
         if self.active is not None:
             raise HostError("TRANSACTION_ACTIVE", "a transaction is already active", data={"transaction": self.active.id})
-        before = scene_snapshot(deep=True)
+        before = scene_snapshot(level=DEEP)
         self._push_undo(f"RoboVision BEGIN {label}")
         self.active = Transaction(tx_id, label, before)
         return {
@@ -51,26 +73,30 @@ class TransactionManager:
         if tx.external_change_fingerprint is None:
             tx.external_change_fingerprint = fingerprint
 
-    def prepare_mutation(self, label: str) -> dict[str, Any]:
+    def prepare_mutation(self, label: str, before: dict[str, Any] | None = None) -> dict[str, Any]:
         """Create a pre-operation undo point and return a deep recovery checkpoint."""
-        before = scene_snapshot(deep=True)
+        checkpoint = before if before is not None else scene_snapshot(level=DEEP)
+        if checkpoint.get("level") != DEEP:
+            raise HostError("HOST_EXCEPTION", "recovery checkpoints require a deep snapshot")
         self._push_undo(f"RoboVision OP {label}")
-        return before
+        return checkpoint
 
     def recover_failed_mutation(self, before: dict[str, Any], *, max_steps: int = 16) -> dict[str, Any]:
         """Restore the exact pre-operation fingerprint after a handler failure."""
         target = before["fingerprint"]
-        current = scene_snapshot(deep=True)
+        current = scene_snapshot(level=DEEP)
         if current["fingerprint"] == target:
+            # The operation failed its preconditions without touching state.
             return {"recovered": True, "undo_steps": 0, "fingerprint": target}
 
+        self._assert_undo_is_safe("recover")
         for step in range(1, max_steps + 1):
             if not bpy.ops.ed.undo.poll():
                 break
             result = bpy.ops.ed.undo()
             if "FINISHED" not in result:
                 break
-            current = scene_snapshot(deep=True)
+            current = scene_snapshot(level=DEEP)
             if current["fingerprint"] == target:
                 return {"recovered": True, "undo_steps": step, "fingerprint": target}
 
@@ -88,7 +114,7 @@ class TransactionManager:
         tx = self._require(tx_id)
         self._assert_safe_or_forced(tx, force=force, action="commit")
         self._push_undo(f"RoboVision COMMIT {tx.label}")
-        after = scene_snapshot(deep=True)
+        after = scene_snapshot(level=DEEP)
         self.active = None
         return {
             "transaction": tx.id,
@@ -102,7 +128,9 @@ class TransactionManager:
         tx = self._require(tx_id)
         self._assert_safe_or_forced(tx, force=force, action="rollback")
         target = tx.begin_snapshot["fingerprint"]
-        current = scene_snapshot(deep=True)
+        current = scene_snapshot(level=DEEP)
+        if current["fingerprint"] != target:
+            self._assert_undo_is_safe("roll back")
         if current["fingerprint"] == target:
             self.active = None
             return {
@@ -119,7 +147,7 @@ class TransactionManager:
             result = bpy.ops.ed.undo()
             if "FINISHED" not in result:
                 break
-            current = scene_snapshot(deep=True)
+            current = scene_snapshot(level=DEEP)
             if current["fingerprint"] == target:
                 self.active = None
                 return {
