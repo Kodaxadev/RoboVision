@@ -190,22 +190,61 @@ def extrude_faces(params, _runtime):
     vector = Vector(tuple(float(v) for v in translation))
 
     bm = bmesh.new()
+    created_vertices: list[int] = []
+    created_edges: list[int] = []
+    created_faces: list[int] = []
     try:
         bm.from_mesh(obj.data)
         bm.faces.ensure_lookup_table()
         try:
-            selected = [bm.faces[int(index)] for index in indices]
+            # Deduplicate while retaining the caller's semantic selection. Passing
+            # the source faces alone follows Blender's face-region extrusion
+            # operator; the original source faces are removed after translation
+            # so a closed manifold does not retain hidden internal faces.
+            selected = list(dict.fromkeys(bm.faces[int(index)] for index in indices))
         except (IndexError, ValueError, TypeError) as exc:
             raise HostError("INVALID_PARAMS", "face_indices contains an invalid face index") from exc
-        result = bmesh.ops.extrude_face_region(bm, geom=selected)
+
+        result = bmesh.ops.extrude_face_region(bm, geom=selected, use_keep_orig=False)
         new_vertices = [element for element in result["geom"] if isinstance(element, bmesh.types.BMVert)]
         bmesh.ops.translate(bm, verts=new_vertices, vec=vector)
+        bmesh.ops.delete(bm, geom=selected, context="FACES")
         bm.normal_update()
+
+        # Return revision-scoped handles to surviving geometry from the newly
+        # extruded region. Any source elements deleted above are filtered out.
+        bm.verts.index_update()
+        bm.edges.index_update()
+        bm.faces.index_update()
+        created_vertices = sorted(
+            element.index for element in result["geom"]
+            if isinstance(element, bmesh.types.BMVert) and element.is_valid
+        )
+        created_edges = sorted(
+            element.index for element in result["geom"]
+            if isinstance(element, bmesh.types.BMEdge) and element.is_valid
+        )
+        created_faces = sorted(
+            element.index for element in result["geom"]
+            if isinstance(element, bmesh.types.BMFace) and element.is_valid
+        )
+
         bm.to_mesh(obj.data)
         obj.data.update()
     finally:
         bm.free()
-    return {"object": object_id(obj), "mesh_revision": bump_mesh_revision(obj), "translation": list(vector)}
+
+    revision = bump_mesh_revision(obj)
+    return {
+        "object": object_id(obj),
+        "mesh_revision": revision,
+        "translation": list(vector),
+        "created": {
+            "vertices": created_vertices,
+            "edges": created_edges,
+            "faces": created_faces,
+        },
+    }
 
 
 def register(registry) -> None:
