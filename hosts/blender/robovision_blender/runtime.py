@@ -62,7 +62,7 @@ class RoboVisionRuntime:
             bpy.app.handlers.depsgraph_update_post.remove(_depsgraph_dirty)
 
     def mark_dirty(self) -> None:
-        # Called from a depsgraph handler; deliberately does not inspect/mutate Blender data.
+        # Handler callback only marks dirty; it deliberately does not inspect or mutate Blender data.
         self._dirty = True
 
     def _tick(self) -> float | None:
@@ -81,6 +81,8 @@ class RoboVisionRuntime:
         current = scene_snapshot(deep=True)
         fingerprint = current["fingerprint"]
         if self._last_fingerprint is not None and fingerprint != self._last_fingerprint:
+            if self.transactions.active is not None:
+                self.transactions.mark_external_change(fingerprint)
             self.revision += 1
         self._last_fingerprint = fingerprint
         self._dirty = False
@@ -90,6 +92,30 @@ class RoboVisionRuntime:
         self._last_fingerprint = current["fingerprint"]
         self._dirty = False
         self.revision += 1
+
+    def _recover_failed_operation(self, before: dict[str, Any] | None, original: Exception) -> tuple[HostError | None, dict[str, Any] | None]:
+        if before is None:
+            return None, None
+        try:
+            recovery = self.transactions.recover_failed_mutation(before)
+            self._last_fingerprint = before["fingerprint"]
+            self._dirty = False
+            return None, recovery
+        except HostError as recovery_error:
+            self._dirty = True
+            original_payload: dict[str, Any] = {
+                "type": type(original).__name__,
+                "message": str(original),
+            }
+            if isinstance(original, HostError):
+                original_payload["code"] = original.code
+                if original.data is not None:
+                    original_payload["data"] = original.data
+            recovery_error.data = {
+                **(recovery_error.data or {}),
+                "original_error": original_payload,
+            }
+            return recovery_error, None
 
     def store_snapshot(self, snapshot: dict[str, Any]) -> str:
         snapshot_id = "snap:" + str(uuid.uuid4())
@@ -109,6 +135,7 @@ class RoboVisionRuntime:
     def dispatch(self, raw: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
         request_id = raw.get("id") if isinstance(raw.get("id"), str) else "invalid"
+        mutation_before: dict[str, Any] | None = None
         try:
             self._refresh_dirty_state()
             method, params, if_revision = self._validate_request(raw)
@@ -125,7 +152,7 @@ class RoboVisionRuntime:
 
             is_transaction_control = method.startswith("transaction.")
             if spec.mutating and not is_transaction_control:
-                self.transactions.prepare_standalone_mutation(method)
+                mutation_before = self.transactions.prepare_mutation(method)
 
             result = spec.handler(params, self)
 
@@ -141,10 +168,16 @@ class RoboVisionRuntime:
                 "timing_ms": round(elapsed, 3),
             }
         except HostError as exc:
+            recovery_error, recovery = self._recover_failed_operation(mutation_before, exc)
+            if recovery_error is not None:
+                exc = recovery_error
             elapsed = (time.perf_counter() - started) * 1000.0
+            data = exc.data
+            if recovery is not None:
+                data = {"operation_error_data": exc.data, "automatic_recovery": recovery}
             error: dict[str, Any] = {"code": exc.code, "message": str(exc), "retryable": exc.retryable}
-            if exc.data is not None:
-                error["data"] = exc.data
+            if data is not None:
+                error["data"] = data
             return {
                 "rv": PROTOCOL_VERSION,
                 "id": request_id,
@@ -154,9 +187,28 @@ class RoboVisionRuntime:
                 "timing_ms": round(elapsed, 3),
             }
         except Exception as exc:
+            recovery_error, recovery = self._recover_failed_operation(mutation_before, exc)
+            if recovery_error is not None:
+                elapsed = (time.perf_counter() - started) * 1000.0
+                error: dict[str, Any] = {
+                    "code": recovery_error.code,
+                    "message": str(recovery_error),
+                    "retryable": recovery_error.retryable,
+                }
+                if recovery_error.data is not None:
+                    error["data"] = recovery_error.data
+                return {
+                    "rv": PROTOCOL_VERSION,
+                    "id": request_id,
+                    "ok": False,
+                    "revision": self.revision,
+                    "error": error,
+                    "timing_ms": round(elapsed, 3),
+                }
             traceback.print_exc()
             elapsed = (time.perf_counter() - started) * 1000.0
-            return {
+            error_data = {"automatic_recovery": recovery} if recovery is not None else None
+            response: dict[str, Any] = {
                 "rv": PROTOCOL_VERSION,
                 "id": request_id,
                 "ok": False,
@@ -168,6 +220,9 @@ class RoboVisionRuntime:
                 },
                 "timing_ms": round(elapsed, 3),
             }
+            if error_data is not None:
+                response["error"]["data"] = error_data
+            return response
 
     def _validate_request(self, raw: dict[str, Any]) -> tuple[str, dict[str, Any], int | None]:
         if raw.get("rv") != PROTOCOL_VERSION:
