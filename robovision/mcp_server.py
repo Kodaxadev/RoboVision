@@ -78,6 +78,17 @@ def _error_payload(exc: Exception) -> dict[str, Any]:
     return {"code": type(exc).__name__, "message": str(exc), "retryable": False}
 
 
+def _preview_path(pass_payload: Any) -> str | None:
+    if not isinstance(pass_payload, dict):
+        return None
+    preview = pass_payload.get("preview")
+    if isinstance(preview, dict) and isinstance(preview.get("path"), str):
+        return preview["path"]
+    if pass_payload.get("kind") == "image" and isinstance(pass_payload.get("path"), str):
+        return pass_payload["path"]
+    return None
+
+
 def build_server():
     # Imported lazily so the core RoboVision client has no mandatory MCP dependency.
     from mcp.server import MCPServer
@@ -155,12 +166,59 @@ def build_server():
         Use rv_status/rv_tools first to discover supported methods and rv_method
         for an exact schema when needed. For mutations, pass the most recently
         observed scene revision as if_revision whenever possible. For visual
-        capture use rv_capture so the model receives pixels, not only a path.
+        capture use rv_capture/rv_perception so the model receives pixels, not
+        only artifact paths.
         """
         try:
             return _call(host, method, params, if_revision)
         except Exception as exc:
             return {"ok": False, "host": host, "method": method, "error": _error_payload(exc)}
+
+    @mcp.tool(structured_output=False)
+    def rv_perception(
+        host: HostName = "blender",
+        params: dict[str, Any] | None = None,
+        model_passes: list[str] | None = None,
+        max_model_bytes_per_image: int = 600_000,
+    ):
+        """Capture an aligned multi-pass perception bundle and return labeled pixels.
+
+        Blender currently supports color, solid, wireframe, world normals,
+        object IDs, material IDs and float depth, all with one view/projection.
+        Full-resolution/raw artifacts remain on disk. model_passes controls which
+        viewable previews are placed into model context; it does not remove host
+        artifacts. Defaults to solid, normals, object_ids and depth.
+        """
+        desired = model_passes or ["solid", "normals", "object_ids", "depth"]
+        if any(not isinstance(item, str) for item in desired):
+            error = {"ok": False, "host": host, "method": "perception.capture_bundle", "error": {"code": "INVALID_PARAMS", "message": "model_passes must contain strings", "retryable": False}}
+            return CallToolResult(is_error=True, content=[TextContent(text=json.dumps(error))], structured_content=error)
+        try:
+            response = _call(host, "perception.capture_bundle", params or {}, None)
+            structured = dict(response)
+            host_passes = response.get("result", {}).get("passes", {})
+            model_meta: dict[str, Any] = {}
+            content = [TextContent(text=json.dumps(structured, ensure_ascii=False, separators=(",", ":")))]
+            for pass_name in desired:
+                path = _preview_path(host_passes.get(pass_name))
+                if path is None:
+                    continue
+                image_bytes, mime, transport_meta = _model_image(
+                    path,
+                    max(100_000, min(int(max_model_bytes_per_image), 4_000_000)),
+                )
+                model_meta[pass_name] = transport_meta
+                content.append(TextContent(text=f"RoboVision perception pass: {pass_name}"))
+                content.append(ImageContent(data=base64.b64encode(image_bytes).decode("ascii"), mime_type=mime))
+            structured["model_images"] = model_meta
+            return CallToolResult(content=content, structured_content=structured)
+        except Exception as exc:
+            error = {"ok": False, "host": host, "method": "perception.capture_bundle", "error": _error_payload(exc)}
+            return CallToolResult(
+                is_error=True,
+                content=[TextContent(text=json.dumps(error, ensure_ascii=False))],
+                structured_content=error,
+            )
 
     @mcp.tool(structured_output=False)
     def rv_capture(
