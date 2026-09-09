@@ -123,5 +123,66 @@ namespace Kodaxa.RoboVision.Editor.Tests
                 new JObject { ["object"] = "unity:session:999999" },
                 ok: false, code: "NOT_FOUND");
         }
+
+        /// <summary>
+        /// The envelope is the same shape whether the call worked or not.
+        /// </summary>
+        /// <remarks>
+        /// PROTOCOL.md said every response carries `state_domain` and
+        /// `consistency`. Measured before this test existed: no error response
+        /// carried either, on either host — the contract was true of the success
+        /// path and written as if it were true of all of them. An audit rather
+        /// than a spot check, because the failure mode is a field that quietly
+        /// exists in only half the answers.
+        /// </remarks>
+        [Test]
+        public void EveryResponseCarriesTheEnvelopeFieldsIncludingFailures()
+        {
+            var rv = new Harness("envelope");
+            var id = rv.CreateObject("Envelope");
+            var cases = new (string Method, JObject Params, long? Revision)[]
+            {
+                ("scene.describe", null, null),
+                ("scene.changes_since", null, null),
+                ("system.capabilities", null, null),
+                ("nope.nope", null, null),
+                ("object.transform", new JObject { ["object"] = "" }, null),
+                ("object.transform", new JObject
+                {
+                    ["object"] = id,
+                    ["local_position"] = new JArray(1f, 0f, 0f)
+                }, 0),
+                ("transaction.commit", new JObject { ["transaction"] = "rvtx:nope:nope" }, null),
+                ("transaction.adopt", new JObject
+                {
+                    ["transaction"] = "rvtx:nope:nope",
+                    ["recovery_token"] = "nope"
+                }, null)
+            };
+
+            foreach (var probe in cases)
+            {
+                var response = rv.Call(probe.Method, probe.Params, ifRevision: probe.Revision,
+                    ok: false, code: null, allowEither: true);
+                Assert.That(response.Value<string>("state_domain"), Is.Not.Null.And.Not.Empty,
+                    probe.Method + " answered without saying which universe it read");
+                Assert.That(response.Value<string>("consistency"), Is.Not.Null.And.Not.Empty,
+                    probe.Method + " answered without saying what its revision is worth");
+            }
+
+            // A failure before any method resolves has no class to report, and
+            // says so rather than claiming the strongest one.
+            var malformed = rv.Host.Dispatch(new JObject
+            {
+                ["rv"] = "1.0",
+                ["id"] = "",
+                ["method"] = "system.ping"
+            });
+            Assert.That(malformed.Value<bool>("ok"), Is.False);
+            Assert.That(malformed.Value<string>("consistency"),
+                Is.EqualTo(RoboVisionHost.ReadsUnknown),
+                "a failure with no resolved tool claimed a consistency class");
+            Assert.That(malformed.Value<string>("state_domain"), Is.Not.Null.And.Not.Empty);
+        }
     }
 }

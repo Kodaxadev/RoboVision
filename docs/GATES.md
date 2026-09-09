@@ -153,6 +153,22 @@ The refusals matter as much as the events, because an empty event list reads as
 The journal is a polling optimisation. Nothing that has to be proved uses it:
 transactions still compare deep fingerprints.
 
+### Transaction ownership
+
+`tests/blender/transaction_ownership.py` (headless) is the first Blender gate
+that needs two real connections, because ownership is exactly what an in-process
+harness cannot see: every in-process call looks like the same local client, and a
+disconnect means nothing without a socket to drop.
+
+Two clients, one editor. A second connection reads freely and is refused
+`TRANSACTION_FOREIGN` for a mutation, a commit and a rollback. The owner
+disconnects; the transaction is reported orphaned, and the stranger is still
+refused — `TRANSACTION_ORPHANED` now — for continuing it, finishing it, or
+adopting it with a wrong token, and that refusal changes nothing about the
+transaction. The owner reconnects, presents the token issued at begin, takes
+ownership, and the token it used is dead afterwards because adoption rotates it.
+`system.hello` is asserted not to contain the credential anywhere.
+
 ### Read consistency
 
 `tests/blender/journal_reads.py` covers the policy that decides what a

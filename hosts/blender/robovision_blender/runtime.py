@@ -13,6 +13,7 @@ from .identity import drain_identity_repairs, forget_identity_owners
 from .journal import AGENT, EDITOR, ChangeJournal
 from .protocol import HOST_VERSION, PROTOCOL_VERSION
 from .registry import HostError, ToolRegistry
+from . import undo
 from .snapshots import DEEP, diff_snapshots, scene_snapshot
 from .transactions import TransactionManager
 from .transport import NonBlockingJsonServer
@@ -43,6 +44,10 @@ class RoboVisionRuntime:
         # history can end without the world it described ending. A handle stale
         # for one of these reasons is not stale for the others, and one id could
         # not report all three.
+        # Which connection the request being served arrived on. A
+        # transaction belongs to a connection, so every handler that cares about
+        # authority reads this rather than anything in the request body.
+        self.current_client_id = 0
         self.bridge = "rvbridge:" + str(uuid.uuid4())
         self.world_incarnation = "rvworld:" + str(uuid.uuid4())
         self.document: str | None = None
@@ -56,7 +61,9 @@ class RoboVisionRuntime:
         if self.running:
             return
         self.registry_ready()
-        self.transport = NonBlockingJsonServer(port=port)
+        self.transport = NonBlockingJsonServer(
+            port=port, on_client_closed=self.transactions.client_disconnected
+        )
         self.transport.start()
         self.install_handlers()
         if not bpy.app.timers.is_registered(self._timer_fn):
@@ -88,6 +95,10 @@ class RoboVisionRuntime:
         """
         self.registry_ready()
         if handlers.attach(self):
+            # The world rotates with a real reattach, so anything scoped to the
+            # previous one ends here rather than surviving into a world it does
+            # not describe.
+            self.transactions.abandon(reason="bridge_reloaded")
             self.bridge = "rvbridge:" + str(uuid.uuid4())
             self.world_incarnation = "rvworld:" + str(uuid.uuid4())
             self.journal.rebind(self.world_incarnation, reason="bridge_attached")
@@ -293,7 +304,7 @@ class RoboVisionRuntime:
         if before is None:
             return None, None
         try:
-            recovery = self.transactions.recover_failed_mutation(before)
+            recovery = undo.recover_failed_mutation(before)
             self._last_fingerprint = before["fingerprint"]
             self._last_snapshot = before
             self._dirty = False
@@ -350,7 +361,8 @@ class RoboVisionRuntime:
 
     # ---------------------------------------------------------------- protocol
 
-    def dispatch(self, raw: dict[str, Any]) -> dict[str, Any]:
+    def dispatch(self, raw: dict[str, Any], client_id: int = 0) -> dict[str, Any]:
+        self.current_client_id = client_id
         return dispatch_request(self, raw)
 
     def _validate_request(self, raw: dict[str, Any]) -> tuple[str, dict[str, Any], int | None]:

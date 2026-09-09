@@ -112,6 +112,15 @@ namespace Kodaxa.RoboVision.Editor.Tests
                 report["journal_incarnation"] = journal.Value<string>("journal_incarnation");
                 report["cursor"] = journal.Value<string>("cursor");
 
+                // Leave a transaction open, after the scene is on disk, so the
+                // process dies mid-edit exactly as a crash would leave it. The
+                // file therefore still holds the pre-transaction state, which is
+                // what phase 2 compares against.
+                var open = Ok("transaction.begin", new JObject { ["label"] = "across a restart" });
+                report["open_transaction"] = open.Value<string>("transaction");
+                report["open_recovery_token"] = open.Value<string>("recovery_token");
+                Ok("object.create", new JObject { ["name"] = "NeverCommitted" });
+
                 var port = FreePort();
                 if (RoboVisionHost.Instance.Running) RoboVisionHost.Instance.Stop();
                 RoboVisionHost.Instance.Start(port);
@@ -219,12 +228,44 @@ namespace Kodaxa.RoboVision.Editor.Tests
                 Check("stale_cursor_refused", cursorCode == "STALE_WORLD",
                     "a cursor from the dead process was answered with " + cursorCode);
 
-                // 7. The port the dead editor held must be bindable again.
+                // 7. A transaction cannot survive the death of the process that
+                // held it. Nothing durable backs the undo stack it would need,
+                // so restoring one would offer a rollback that cannot be
+                // performed — and its world-scoped id makes it recognisably not
+                // a transaction of this process even before that is considered.
+                var deadTx = state.Value<string>("open_transaction");
+                var deadToken = state.Value<string>("open_recovery_token");
+                var hello = Ok("system.hello");
+                Check("transaction_did_not_survive_restart",
+                    !hello["transaction"].Value<bool>("active"),
+                    "a transaction from the dead process was reported as open");
+                Check("dead_transaction_cannot_commit",
+                    Call("transaction.commit", new JObject { ["transaction"] = deadTx })
+                        ["error"]?.Value<string>("code") != null,
+                    "a transaction from the dead process was committed");
+                Check("dead_transaction_cannot_be_adopted",
+                    Call("transaction.adopt", new JObject
+                    {
+                        ["transaction"] = deadTx,
+                        ["recovery_token"] = deadToken
+                    })["error"]?.Value<string>("code") == "TRANSACTION_ADOPTION_REFUSED",
+                    "a token from the dead process adopted something in this one");
+
+                var fresh = Ok("transaction.begin", new JObject { ["label"] = "after the restart" });
+                Check("new_transaction_cannot_collide",
+                    fresh.Value<string>("transaction") != deadTx,
+                    "a newly minted transaction reused the dead process's identity");
+                Ok("transaction.discard", new JObject
+                {
+                    ["transaction"] = fresh.Value<string>("transaction")
+                });
+
+                // 8. The port the dead editor held must be bindable again.
                 RoboVisionHost.Instance.Start(port);
                 Check("rebinds_previous_port", RoboVisionHost.Instance.Running,
                     "the new process could not bind the port the old one used");
 
-                // 8. The shipped Python client must be able to reconnect.
+                // 9. The shipped Python client must be able to reconnect.
                 // Recorded once: reporting the same fact as both a finding and a
                 // check made the harness print eight PASS lines for seven
                 // checks, and an inflated count is exactly the kind of evidence

@@ -22,6 +22,11 @@ from .tool_docs import METHOD_DOCS
 AUTHORITATIVE = "authoritative"
 NOTIFIED = "notified"
 INDEPENDENT = "independent"
+# No tool was resolved, so no class of answer applies. Reported on failures that
+# happen before a method is known — a protocol mismatch, a missing id, an unknown
+# method. Claiming `independent` there would be almost right and occasionally
+# wrong; this says what is actually the case.
+UNKNOWN = "unknown"
 READ_CONSISTENCY = (AUTHORITATIVE, NOTIFIED, INDEPENDENT)
 
 

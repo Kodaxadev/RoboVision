@@ -97,6 +97,14 @@ namespace Kodaxa.RoboVision.Editor
         public const string ReadsAuthoritative = "authoritative";
         public const string ReadsNotified = "notified";
         public const string ReadsIndependent = "independent";
+        /// <summary>No tool was resolved, so no class of answer applies.</summary>
+        /// <remarks>
+        /// Reported on failures that happen before a method is known — a
+        /// protocol mismatch, a missing id, an unknown method. Claiming
+        /// `independent` there would be almost right and occasionally wrong;
+        /// this says what is actually the case.
+        /// </remarks>
+        public const string ReadsUnknown = "unknown";
 
         private readonly Dictionary<string, ToolSpec> _tools = new Dictionary<string, ToolSpec>(StringComparer.Ordinal);
         private RoboVisionServer _server;
@@ -109,6 +117,8 @@ namespace Kodaxa.RoboVision.Editor
         public string Bridge => _reconciler.Bridge;
         /// <summary>This editing context; rotates when a different one is opened.</summary>
         public string WorldIncarnation => _reconciler.WorldIncarnation;
+        internal bool WorldSettled => _reconciler.WorldSettled;
+        internal bool WorldResumed => _reconciler.WorldResumed;
         internal RoboVisionJournal Journal => _reconciler.Journal;
         /// <summary>The universe the editor is in right now.</summary>
         public static string StateDomain =>

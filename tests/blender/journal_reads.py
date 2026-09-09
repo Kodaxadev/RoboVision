@@ -198,7 +198,51 @@ def bookkeeping_properties_stay_out_of_authored_state(rv: Host) -> None:
            "an authored custom property did not register as a change")
 
 
+def every_response_carries_the_envelope_fields(rv: Host) -> None:
+    """The envelope is the same shape whether the call worked or not.
+
+    PROTOCOL.md said every response carries `state_domain` and `consistency`.
+    Measured before this scenario existed: no error response carried either, on
+    either host — the contract was true of the success path and written as if it
+    were true of all of them. An audit rather than a spot check, because the
+    failure mode is a field that quietly exists in only half the answers.
+    """
+    clean_scene()
+    created = rv.result("object.create", {"kind": "cube", "name": "Envelope"})["id"]
+    probes = [
+        ("scene.describe", None, None),
+        ("scene.changes_since", None, None),
+        ("system.capabilities", None, None),
+        ("nope.nope", None, None),
+        ("object.transform", {"object": ""}, None),
+        ("object.transform", {"object": created, "location": [1, 0, 0]}, 0),
+        ("transaction.commit", {"transaction": "rvtx:nope:nope"}, None),
+        ("transaction.adopt", {"transaction": "rvtx:nope:nope", "recovery_token": "nope"}, None),
+    ]
+    for method, params, if_revision in probes:
+        response = rv.runtime.dispatch({
+            "rv": "1.0",
+            "id": f"envelope-{method}",
+            "method": method,
+            "params": params or {},
+            **({"if_revision": if_revision} if if_revision is not None else {}),
+        })
+        expect(bool(response.get("state_domain")),
+               f"{method} answered without saying which universe it read: {response}")
+        expect(bool(response.get("consistency")),
+               f"{method} answered without saying what its revision is worth: {response}")
+
+    # A failure before any method resolves has no class to report, and says so
+    # rather than claiming the strongest one.
+    malformed = rv.runtime.dispatch({"rv": "1.0", "id": "", "method": "system.ping", "params": {}})
+    expect(malformed.get("ok") is False, f"a malformed request succeeded: {malformed}")
+    expect(malformed.get("consistency") == "unknown",
+           f"a failure with no resolved tool claimed a consistency class: {malformed}")
+    expect(bool(malformed.get("state_domain")), f"no state domain on a protocol failure: {malformed}")
+
+
 SCENARIOS = (
+    every_response_carries_the_envelope_fields,
     read_consistency_is_declared_for_every_tool,
     a_state_bearing_read_reconciles,
     journal_polling_stays_cheap,

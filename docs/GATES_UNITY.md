@@ -195,6 +195,43 @@ have made an editor-control change look like an edit, and was not done; whether
 active-scene changes belong in the control-plane sequence owed for identity
 events is left to the audit work, where that sequence gets designed.
 
+### Transactions: ownership, world binding and recovery
+
+Probed before anything was written, and what it found was worse than a missing
+feature. A transaction stored no world. After a Single-mode load it stayed
+`active` in `system.hello` with a begin fingerprint from a world that no longer
+existed, accepted a further mutation, and `transaction.commit` **succeeded** —
+collapsing undo groups in a universe the checkpoint never described. Entering a
+Prefab Stage, leaving one and swapping one for another all did the same.
+`RoboVisionTransactionLifecycleTests.cs` now asserts that each of those ends the
+transaction as `abandoned` with reason `world_replaced`, and that a later commit
+or rollback is told that rather than `NO_TRANSACTION`.
+
+Survival across a domain reload was measured in both directions rather than
+assumed, because persisting metadata and calling it survival proves nothing:
+
+- **saved scene:** reverting to the transaction's undo group after the reload
+  really did restore the begin fingerprint. So the transaction comes back
+  `orphaned`, no connection owns it, and the token issued at begin adopts it —
+  after which the rollback reproduces the checkpoint it promised
+- **unsaved scene:** the reload re-addresses every object, so the checkpoint
+  names identities that no longer exist. Undo removed the right objects and the
+  begin fingerprint still could not be reproduced. That comes back
+  `recovery_uncertain`: not adoptable, not rollback-capable, and honest about it
+  — `transaction.discard` is the only outcome offered
+
+A process restart reaches neither branch, proven across two real editors by
+`tools/unity-restart-gate.sh`: SessionState dies with the process, the
+transaction is not reported open, its id cannot be committed or adopted with the
+token that opened it, and a newly minted transaction cannot collide with it.
+
+Ownership over real sockets is in `RoboVisionConcurrencyTests.cs`, which replaced
+a weaker rule it used to assert — any client could finish an orphan once the
+owner's socket dropped. That was convenient and wrong; it treated a dropped TCP
+connection as authorization. The editor still does not stay wedged, because the
+owner holds a token and anyone may discard; what is gone is finishing someone
+else's edit without proving anything.
+
 ### Defects this gate found
 
 - a request with no `id` was accepted, because the id was defaulted before the
@@ -273,11 +310,16 @@ apart from the 6000.6 ones rather than merged into a single number:
 
 | editor | gate | result |
 | --- | --- | --- |
-| 6000.0.83f1 (declared floor) | EditMode suite | 112 tests, 108 passed, 0 failed, 4 SceneView skips |
-| 6000.0.83f1 (declared floor) | restart + package re-resolution | 11/11 checks, all three phases on 6000.0.83f1 |
-| 6000.6.0f1 (development) | EditMode suite | 112 tests, 108 passed, 0 failed, 4 SceneView skips |
-| 6000.6.0f1 (development) | restart + package re-resolution | 11/11 checks |
+| 6000.0.83f1 (declared floor) | EditMode suite | 118 tests, 114 passed, 0 failed, 4 SceneView skips |
+| 6000.0.83f1 (declared floor) | restart + package re-resolution | 15/15 checks, all three phases on 6000.0.83f1 |
+| 6000.6.0f1 (development) | EditMode suite | 118 tests, 114 passed, 0 failed, 4 SceneView skips |
+| 6000.6.0f1 (development) | restart + package re-resolution | 15/15 checks |
 | 6000.0.83 (CI) | compile only | `ROBOVISION_UNITY_COMPILE_PASS` |
+
+At the world/identity checkpoint the suite was 112/108/0/4 on both editors and
+the restart gate 11/11. The counts above are the current ones: the suite grew by
+the transaction lifecycle and envelope tests, and the restart gate by the four
+checks that a transaction does not survive a process death.
 
 Both editors were confirmed from the run's own log — `Initialize engine version:
 6000.0.83f1` — rather than from the path it was launched by. Compile coverage

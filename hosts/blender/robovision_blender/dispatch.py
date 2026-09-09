@@ -13,8 +13,9 @@ from typing import Any
 
 import bpy
 
+from . import undo
 from .protocol import AUTHORED, PROTOCOL_VERSION
-from .registry import AUTHORITATIVE, NOTIFIED, HostError
+from .registry import AUTHORITATIVE, NOTIFIED, UNKNOWN, HostError
 
 # A transaction's own bookkeeping is not a scene mutation, so it does not go
 # through the accept path that decides `applied` versus `noop`.
@@ -40,11 +41,23 @@ def validate_request(raw: dict[str, Any]) -> tuple[str, dict[str, Any], int | No
     return method, params, if_revision
 
 
-def _envelope(runtime, request_id: str, started: float, **extra: Any) -> dict[str, Any]:
+def _envelope(runtime, request_id: str, started: float, *, consistency: str | None = None,
+              **extra: Any) -> dict[str, Any]:
+    """The response shape, which does not depend on whether the call succeeded.
+
+    PROTOCOL.md said every response carries `state_domain` and `consistency`;
+    measured, no error response on either host carried either of them. A failure
+    still happened in a state domain, and — once a method resolves — still went
+    through a tool with a declared consistency class. Before that point there is
+    no class to report, and `unknown` says so rather than claiming the strongest
+    one.
+    """
     return {
         "rv": PROTOCOL_VERSION,
         "id": request_id,
         "revision": runtime.revision,
+        "consistency": consistency or UNKNOWN,
+        "state_domain": AUTHORED,
         "timing_ms": round((time.perf_counter() - started) * 1000.0, 3),
         **extra,
     }
@@ -62,9 +75,14 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
     started = time.perf_counter()
     request_id = raw.get("id") if isinstance(raw.get("id"), str) else "invalid"
     mutation_before: dict[str, Any] | None = None
+    # What the answer would have been worth, for a failure that happens after the
+    # tool is known. Before that it stays unknown rather than being reported as
+    # the strongest class.
+    consistency: str | None = None
     try:
         method, params, if_revision = validate_request(raw)
         spec = runtime.registry.get(method)
+        consistency = spec.reads
         if spec.requires_ui and bpy.app.background:
             raise HostError("INVALID_CONTEXT", f"{method} requires an interactive Blender UI")
 
@@ -73,6 +91,14 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
         # presents scene state re-reads first: otherwise it can return current
         # geometry stamped with the revision and journal position of the state
         # before it, which is worse than either being stale on its own.
+        # Concurrency policy: a transaction belongs to the connection that
+        # opened it. Another client's mutation would otherwise join that
+        # transaction silently and be rolled back with it, so it is refused
+        # rather than guessed at. Reads stay open to everyone, and transaction
+        # control checks its own authority — an orphan is proved, not claimed.
+        if spec.mutating and not method.startswith("transaction."):
+            runtime.transactions.assert_mutation_allowed(runtime.current_client_id)
+
         checkpoint: dict[str, Any] | None = None
         if spec.mutating or spec.reads == AUTHORITATIVE:
             # One full read serves both: the concurrency check below is only
@@ -94,7 +120,7 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
             )
 
         if checkpoint is not None and not method.startswith("transaction."):
-            mutation_before = runtime.transactions.prepare_mutation(method, checkpoint)
+            mutation_before = undo.prepare_mutation(method, checkpoint)
 
         result = spec.handler(params, runtime)
 
@@ -112,9 +138,8 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
         # the domain is a constant here — reported anyway, because a client
         # driving both editors must be able to read the same field in both
         # rather than infer it from which host answered.
-        response = _envelope(runtime, request_id, started, ok=True,
-                             consistency=spec.reads, result=result,
-                             state_domain=AUTHORED)
+        response = _envelope(runtime, request_id, started, consistency=spec.reads,
+                             ok=True, result=result)
         if outcome is not None:
             response["outcome"] = outcome
         return response
@@ -126,13 +151,14 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
         data = None
         if recovery is not None:
             data = {"operation_error_data": exc.data, "automatic_recovery": recovery}
-        return _envelope(runtime, request_id, started, ok=False, error=_error_payload(exc, data))
+        return _envelope(runtime, request_id, started, consistency=consistency,
+                         ok=False, error=_error_payload(exc, data))
 
     except Exception as exc:
         recovery_error, recovery = runtime._recover_failed_operation(mutation_before, exc, request_id)
         if recovery_error is not None:
-            return _envelope(runtime, request_id, started, ok=False,
-                             error=_error_payload(recovery_error))
+            return _envelope(runtime, request_id, started, consistency=consistency,
+                             ok=False, error=_error_payload(recovery_error))
         traceback.print_exc()
         error: dict[str, Any] = {
             "code": "HOST_EXCEPTION",
@@ -141,4 +167,5 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
         }
         if recovery is not None:
             error["data"] = {"automatic_recovery": recovery}
-        return _envelope(runtime, request_id, started, ok=False, error=error)
+        return _envelope(runtime, request_id, started, consistency=consistency,
+                         ok=False, error=error)

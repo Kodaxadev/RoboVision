@@ -29,8 +29,12 @@ namespace Kodaxa.RoboVision.Editor
             CurrentClientId = clientId;
             var watch = Stopwatch.StartNew();
             var requestId = raw.Value<string>("id");
-            RoboVisionTransactions.OperationCheckpoint checkpoint = null;
+            RoboVisionUndo.OperationCheckpoint checkpoint = null;
             SceneRead checkpointRead = null;
+            // What the answer would have been worth, for a failure that happens
+            // after the tool is known. Before that it stays unknown rather than
+            // being reported as the strongest class.
+            string consistency = null;
             try
             {
                 if (raw.Value<string>("rv") != ProtocolVersion)
@@ -45,25 +49,42 @@ namespace Kodaxa.RoboVision.Editor
                 var parameters = raw["params"] as JObject ?? new JObject();
                 if (!_tools.TryGetValue(method, out var spec))
                     throw new RoboVisionException("UNKNOWN_METHOD", "unknown method: " + method);
+                consistency = spec.Reads;
 
                 // Concurrency policy: a transaction belongs to the connection
                 // that opened it. Another client's mutation would otherwise join
                 // that transaction silently and be rolled back with it, so it is
-                // refused rather than guessed at. Reads stay open to everyone,
-                // and transaction control is allowed so an orphaned transaction
-                // can be finished deliberately.
-                if (spec.Mutating && !spec.TransactionControl && Transactions.Active
-                    && Transactions.ActiveOwner != clientId)
+                // refused rather than guessed at. Reads stay open to everyone.
+                //
+                // Transaction control is no longer waved through. It used to be,
+                // so that an orphan could be "finished deliberately" by anyone
+                // who could reach the port — which treated a dropped TCP
+                // connection as authorization. Those methods now check the
+                // recovery token themselves, and an orphan is refused here to
+                // everybody, including whoever happens to hold the old owner's
+                // connection id.
+                if (spec.Mutating && !spec.TransactionControl && Transactions.Active)
                 {
-                    throw new RoboVisionException(
-                        "TRANSACTION_FOREIGN",
-                        "another client holds the active transaction",
-                        true,
-                        new JObject
-                        {
-                            ["active"] = Transactions.ActiveState(),
-                            ["your_client"] = clientId
-                        });
+                    if (Transactions.ActiveOwnerDisconnected)
+                        throw new RoboVisionException(
+                            "TRANSACTION_ORPHANED",
+                            "the open transaction is waiting to be adopted before it can be continued",
+                            true,
+                            new JObject
+                            {
+                                ["active"] = Transactions.ActiveState(),
+                                ["remedy"] = "transaction.adopt with the recovery token issued at begin"
+                            });
+                    if (Transactions.ActiveOwner != clientId)
+                        throw new RoboVisionException(
+                            "TRANSACTION_FOREIGN",
+                            "another client holds the active transaction",
+                            true,
+                            new JObject
+                            {
+                                ["active"] = Transactions.ActiveState(),
+                                ["your_client"] = clientId
+                            });
                 }
 
                 // Authoring is an Edit Mode operation. In play mode these tools
@@ -115,7 +136,7 @@ namespace Kodaxa.RoboVision.Editor
                 }
 
                 if (spec.Mutating && !spec.TransactionControl)
-                    checkpoint = Transactions.PrepareMutation(method, checkpointRead.Fingerprint);
+                    checkpoint = RoboVisionUndo.PrepareMutation(method, checkpointRead.Fingerprint);
 
                 var result = spec.Handler(parameters);
 
@@ -129,33 +150,23 @@ namespace Kodaxa.RoboVision.Editor
                     outcome = accepted.Moved ? "applied" : "noop";
                 }
 
-                watch.Stop();
-                var response = new JObject
-                {
-                    ["rv"] = ProtocolVersion,
-                    ["id"] = requestId ?? "invalid",
-                    ["ok"] = true,
-                    ["revision"] = Revision,
-                    ["consistency"] = spec.Reads,
-                    ["result"] = result,
-                    ["state_domain"] = StateDomain,
-                    ["timing_ms"] = Math.Round(watch.Elapsed.TotalMilliseconds, 3)
-                };
+                var response = Envelope(requestId, watch, spec.Reads);
+                response["ok"] = true;
+                response["result"] = result;
                 if (outcome != null) response["outcome"] = outcome;
                 return response;
             }
             catch (RoboVisionException ex)
             {
                 var recoveryFailure = TryRecoverFailedOperation(checkpoint, checkpointRead, requestId, ex, out var recovery);
-                return ErrorResponse(requestId, watch, recoveryFailure ?? ex, recovery);
+                return ErrorResponse(requestId, watch, recoveryFailure ?? ex, recovery, consistency);
             }
             catch (Exception ex)
             {
                 var recoveryFailure = TryRecoverFailedOperation(checkpoint, checkpointRead, requestId, ex, out var recovery);
                 if (recoveryFailure != null)
-                    return ErrorResponse(requestId, watch, recoveryFailure, recovery);
+                    return ErrorResponse(requestId, watch, recoveryFailure, recovery, consistency);
                 UnityEngine.Debug.LogException(ex);
-                watch.Stop();
                 var error = new JObject
                 {
                     ["code"] = "HOST_EXCEPTION",
@@ -163,20 +174,15 @@ namespace Kodaxa.RoboVision.Editor
                     ["retryable"] = false
                 };
                 if (recovery != null) error["data"] = new JObject { ["automatic_recovery"] = recovery };
-                return new JObject
-                {
-                    ["rv"] = ProtocolVersion,
-                    ["id"] = requestId ?? "invalid",
-                    ["ok"] = false,
-                    ["revision"] = Revision,
-                    ["error"] = error,
-                    ["timing_ms"] = Math.Round(watch.Elapsed.TotalMilliseconds, 3)
-                };
+                var response = Envelope(requestId, watch, consistency);
+                response["ok"] = false;
+                response["error"] = error;
+                return response;
             }
         }
 
         private RoboVisionException TryRecoverFailedOperation(
-            RoboVisionTransactions.OperationCheckpoint checkpoint,
+            RoboVisionUndo.OperationCheckpoint checkpoint,
             SceneRead checkpointRead,
             string requestId,
             Exception original,
@@ -186,7 +192,7 @@ namespace Kodaxa.RoboVision.Editor
             if (checkpoint == null) return null;
             try
             {
-                recovery = Transactions.RecoverFailedMutation(checkpoint);
+                recovery = RoboVisionUndo.RecoverFailedMutation(checkpoint);
                 _reconciler.AcceptRecovered(checkpointRead);
                 return null;
             }
@@ -213,9 +219,36 @@ namespace Kodaxa.RoboVision.Editor
             }
         }
 
-        private JObject ErrorResponse(string requestId, Stopwatch watch, RoboVisionException ex, JObject recovery)
+        /// <summary>
+        /// The envelope, which is the same shape whether the call worked or not.
+        /// </summary>
+        /// <remarks>
+        /// PROTOCOL.md said every response carries `state_domain` and
+        /// `consistency`; measured, no error response on either host carried
+        /// either of them. A failure still happened in a state domain — the
+        /// editor was playing or it was not — and, once a method resolves, still
+        /// went through a tool with a declared consistency class. Before that
+        /// point there is no class to report, and `unknown` says so rather than
+        /// claiming the strongest one.
+        /// </remarks>
+        private JObject Envelope(string requestId, Stopwatch watch, string consistency)
         {
             watch.Stop();
+            return new JObject
+            {
+                ["rv"] = ProtocolVersion,
+                ["id"] = requestId ?? "invalid",
+                ["revision"] = Revision,
+                ["consistency"] = consistency ?? ReadsUnknown,
+                ["state_domain"] = StateDomain,
+                ["timing_ms"] = Math.Round(watch.Elapsed.TotalMilliseconds, 3)
+            };
+        }
+
+        private JObject ErrorResponse(string requestId, Stopwatch watch, RoboVisionException ex, JObject recovery,
+            string consistency)
+        {
+            var response = Envelope(requestId, watch, consistency);
             var error = new JObject
             {
                 ["code"] = ex.Code,
@@ -234,15 +267,9 @@ namespace Kodaxa.RoboVision.Editor
             {
                 error["data"] = ex.Data.DeepClone();
             }
-            return new JObject
-            {
-                ["rv"] = ProtocolVersion,
-                ["id"] = requestId ?? "invalid",
-                ["ok"] = false,
-                ["revision"] = Revision,
-                ["error"] = error,
-                ["timing_ms"] = Math.Round(watch.Elapsed.TotalMilliseconds, 3)
-            };
+            response["ok"] = false;
+            response["error"] = error;
+            return response;
         }
     }
 }

@@ -26,7 +26,7 @@ import bpy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _harness import Host, artifact_dir, expect, run_gate  # noqa: E402
+from _harness import Host, artifact_dir, clean_scene, expect, run_gate  # noqa: E402
 
 LISTS = ("depsgraph_update_post", "load_pre", "load_post", "save_post")
 
@@ -98,6 +98,42 @@ def detach_and_reattach_repeatedly(rv: Host) -> None:
     rv.call("scene.changes_since", {"cursor": cursor}, ok=False, code="STALE_WORLD")
     restarted = rv.result("scene.changes_since")
     expect(restarted["epoch"] == 1, f"the journal did not restart on reattach: {restarted['epoch']}")
+
+
+def a_reattach_abandons_an_open_transaction(rv: Host) -> None:
+    """A transaction cannot survive into a world the bridge cannot vouch for.
+
+    Reattaching rotates the world, because an add-on reload takes this module's
+    own memory with it and leaves nothing session-scoped to verify continuity
+    against. The Unity host keeps its world across a domain reload and restores
+    an interrupted transaction as orphaned; Blender cannot make that claim, so
+    the transaction ends here with a reason rather than staying open against a
+    checkpoint whose world no longer has a name.
+    """
+    clean_scene()
+    rv.result("scene.snapshot")
+    begun = rv.result("transaction.begin", {"label": "across a reattach"})
+    tx = begun["transaction"]
+    expect(tx.startswith("rvtx:"), f"the transaction id is not world-scoped: {tx}")
+    expect(bool(begun.get("recovery_token")), "begin issued no recovery token")
+    rv.result("object.create", {"kind": "cube", "name": "InsideTransaction"})
+
+    rv.runtime.remove_handlers()
+    rv.runtime.install_handlers()
+
+    hello = rv.result("system.hello")["transaction"]
+    expect(hello["active"] is False,
+           f"a transaction survived a bridge reattach: {hello}")
+    for method in ("transaction.commit", "transaction.rollback"):
+        refused = rv.call(method, {"transaction": tx}, ok=False, code="TRANSACTION_ABANDONED")
+        data = refused["error"]["data"]
+        expect(data.get("reason") == "bridge_reloaded",
+               f"{method} did not say why the transaction ended: {data}")
+
+    # And the rebuilt bridge is usable rather than wedged by a ghost.
+    fresh = rv.result("transaction.begin", {"label": "after the reattach"})["transaction"]
+    expect(fresh != tx, "a new transaction reused the abandoned identity")
+    rv.result("transaction.discard", {"transaction": fresh})
 
 
 def a_leftover_callback_is_swept(rv: Host) -> None:
@@ -193,6 +229,8 @@ def main() -> None:
     rv = Host("addon-lifecycle")
     detach_and_reattach_repeatedly(rv)
     print("  ok detach_and_reattach_repeatedly", flush=True)
+    a_reattach_abandons_an_open_transaction(rv)
+    print("  ok a_reattach_abandons_an_open_transaction", flush=True)
     a_leftover_callback_is_swept(rv)
     print("  ok a_leftover_callback_is_swept", flush=True)
     summary = the_real_addon_lifecycle(rv)

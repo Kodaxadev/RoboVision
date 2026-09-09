@@ -56,6 +56,13 @@ def hello(_params, runtime):
         "journal": runtime.journal.state(),
         "world_incarnation": runtime.world_incarnation,
         "document": runtime.document,
+        # Enough to diagnose an interrupted transaction — who holds it, what
+        # state it is in, whether it needs adopting and whether a verified
+        # rollback is available — and nothing that would let a caller take it.
+        "transaction": {
+            "active": runtime.transactions.active is not None,
+            "state": runtime.transactions.state(),
+        },
         "capability_count": len(live_capabilities),
         "capabilities": live_capabilities,
         "discovery": {

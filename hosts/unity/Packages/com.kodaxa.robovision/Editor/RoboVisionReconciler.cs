@@ -69,6 +69,8 @@ namespace Kodaxa.RoboVision.Editor
         private SceneRead _baseline;
         private bool _dirty = true;
         private WorldContext _world;
+        /// <summary>Whether the world this bridge woke up in is one it can verify.</summary>
+        private bool _worldResumed;
 
         public RoboVisionReconciler(RoboVisionTransactions transactions)
         {
@@ -89,6 +91,10 @@ namespace Kodaxa.RoboVision.Editor
 
         public string Bridge { get; }
         public string WorldIncarnation { get; private set; }
+        /// <summary>The world has been read out of the editor at least once.</summary>
+        public bool WorldSettled => _world != null;
+        /// <summary>That world is one this bridge could verify it woke up in.</summary>
+        public bool WorldResumed => _worldResumed;
         public RoboVisionJournal Journal { get; }
         public long Revision { get; private set; }
         public bool Dirty => _dirty;
@@ -139,6 +145,13 @@ namespace Kodaxa.RoboVision.Editor
                     WorldChanged = worldChanged
                 };
             }
+
+            // The world is settled and what is loaded is the authored scene,
+            // so an interrupted transaction can be judged. Idempotent, because
+            // anything that consults a transaction judges it first: tying this to
+            // one particular reconciliation left it unjudged whenever the world
+            // happened to be established during a play mode transition.
+            _transactions.EnsureJudged();
 
             baseline = baseline ?? _baseline;
             var known = baseline != null ? baseline.Fingerprint : null;
@@ -248,6 +261,7 @@ namespace Kodaxa.RoboVision.Editor
                 _baseline = current;
             }
 
+            _worldResumed = resumed;
             if (!playing) Remember();
             return !resumed;
         }
@@ -255,6 +269,13 @@ namespace Kodaxa.RoboVision.Editor
         /// <summary>A different editing context is open; the previous history does not describe it.</summary>
         private Reconciliation ReplaceWorld(SceneRead current, string source, string request)
         {
+            // A transaction describes the world it was opened in. Measured
+            // before this line existed: after a Single-mode load the previous
+            // transaction stayed active, accepted another mutation and
+            // committed — collapsing undo groups in a universe its checkpoint
+            // never described. It ends here, with a reason, and a later commit
+            // or rollback of it is told so.
+            _transactions.AbandonForWorld("world_replaced");
             WorldIncarnation = MintWorld();
             Journal.Rebind(WorldIncarnation, "load");
             Revision = 0;

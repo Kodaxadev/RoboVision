@@ -11,6 +11,10 @@ MAX_MESSAGE_BYTES = 4 * 1024 * 1024
 @dataclass(slots=True)
 class _Client:
     sock: socket.socket
+    # Which connection this is. A transaction belongs to the connection that
+    # opened it, and a file descriptor number is reused by the OS as soon as it
+    # is closed — so the id a transaction remembers must not be one.
+    id: int
     recv_buffer: bytearray = field(default_factory=bytearray)
     send_buffer: bytearray = field(default_factory=bytearray)
 
@@ -22,11 +26,14 @@ class NonBlockingJsonServer:
     invokes dispatch, and writes responses without blocking.
     """
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 9877) -> None:
+    def __init__(self, host: str = "127.0.0.1", port: int = 9877,
+                 on_client_closed: Callable[[int], None] | None = None) -> None:
         self.host = host
         self.port = port
         self.listener: socket.socket | None = None
         self.clients: dict[int, _Client] = {}
+        self.on_client_closed = on_client_closed
+        self._next_client_id = 0
 
     @property
     def running(self) -> bool:
@@ -51,7 +58,8 @@ class NonBlockingJsonServer:
             finally:
                 self.listener = None
 
-    def poll(self, dispatch: Callable[[dict[str, Any]], dict[str, Any]], *, command_budget: int = 8) -> None:
+    def poll(self, dispatch: Callable[[dict[str, Any], int], dict[str, Any]], *,
+             command_budget: int = 8) -> None:
         if self.listener is None:
             return
         self._accept_pending()
@@ -70,9 +78,11 @@ class NonBlockingJsonServer:
             except BlockingIOError:
                 return
             sock.setblocking(False)
-            self.clients[sock.fileno()] = _Client(sock)
+            self._next_client_id += 1
+            self.clients[sock.fileno()] = _Client(sock, self._next_client_id)
 
-    def _read_client(self, client: _Client, dispatch: Callable[[dict[str, Any]], dict[str, Any]], budget: int) -> int:
+    def _read_client(self, client: _Client,
+                     dispatch: Callable[[dict[str, Any], int], dict[str, Any]], budget: int) -> int:
         try:
             while True:
                 chunk = client.sock.recv(65536)
@@ -104,7 +114,7 @@ class NonBlockingJsonServer:
                 request = json.loads(raw.decode("utf-8"))
                 if not isinstance(request, dict):
                     raise ValueError("request must be a JSON object")
-                response = dispatch(request)
+                response = dispatch(request, client.id)
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
                 response = self._transport_error("INVALID_REQUEST", str(exc))
             self._queue(client, response)
@@ -149,6 +159,13 @@ class NonBlockingJsonServer:
             client.sock.close()
         finally:
             self.clients.pop(fileno, None)
+            # A transaction whose owner has gone must find out, or it stays
+            # active forever with nobody able to prove they may finish it.
+            if self.on_client_closed is not None:
+                try:
+                    self.on_client_closed(client.id)
+                except Exception:
+                    pass
 
     @staticmethod
     def _transport_error(code: str, message: str) -> dict[str, Any]:

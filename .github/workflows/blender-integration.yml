@@ -107,6 +107,17 @@ jobs:
             --python-exit-code 1 \
             --python tests/blender/lifecycle_addon.py
 
+      - name: Run RoboVision transaction ownership gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-transaction-ownership
+          "${BLENDER_DIR}/blender" \
+            --background \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/transaction_ownership.py
+
       - name: Run RoboVision change journal gate
         shell: bash
         run: |

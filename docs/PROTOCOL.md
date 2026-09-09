@@ -23,7 +23,17 @@ control-plane, not something an author wrote, so it moves neither `outcome` nor
 `IDENTITY_REPAIRED` with the basis for the claim, because the agent's valid
 address for an object may have changed even though the scene did not.
 
-Every response also carries `state_domain`, saying which universe the state in
+Every response carries `state_domain` and `consistency` — every response,
+including failures. That was written before it was true: measured, no error
+response on either host carried either field, so the contract described the
+success path and claimed all of them. A failure still happened in a state
+domain, and once a method resolves it still went through a tool with a declared
+consistency class; before that point the class is `unknown`, which is reported
+rather than defaulting to the strongest one. An audit test on each host asserts
+this across representative successes and failures, so a field cannot come to
+exist on only half the answers again.
+
+`state_domain` says which universe the state in
 it came from. `authored` is the scene as authored. `play_runtime` means a Unity
 editor is playing: the objects reported are runtime instances of the open
 scenes, discarded when play mode ends, and the `revision` — always the authored
@@ -54,7 +64,7 @@ state. The catalog publishes each method's class as `reads`.
 ## Failure
 
 ```json
-{"rv":"1.0","id":"uuid","ok":false,"revision":42,"error":{"code":"STALE_REVISION","message":"scene changed","retryable":true,"data":{"expected":41,"actual":42}}}
+{"rv":"1.0","id":"uuid","ok":false,"revision":42,"consistency":"authoritative","state_domain":"authored","error":{"code":"STALE_REVISION","message":"scene changed","retryable":true,"data":{"expected":41,"actual":42}}}
 ```
 
 ## Core error codes
@@ -71,6 +81,12 @@ state. The catalog publishes each method's class as `reads`.
 - `JOURNAL_REPLACED`
 - `PLAY_MODE_MUTATION_REFUSED`
 - `AMBIGUOUS_TARGET_SCENE`
+- `TRANSACTION_FOREIGN`
+- `TRANSACTION_ORPHANED`
+- `TRANSACTION_ABANDONED`
+- `TRANSACTION_FINISHED`
+- `TRANSACTION_ADOPTION_REFUSED`
+- `TRANSACTION_RECOVERY_UNCERTAIN`
 - `EPOCH_SUPERSEDED`
 - `SEQUENCE_TOO_OLD`
 - `INVALID_CONTEXT`

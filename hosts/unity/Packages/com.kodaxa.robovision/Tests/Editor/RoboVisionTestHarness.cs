@@ -34,7 +34,8 @@ namespace Kodaxa.RoboVision.Editor.Tests
             JObject parameters = null,
             long? ifRevision = null,
             bool ok = true,
-            string code = null)
+            string code = null,
+            bool allowEither = false)
         {
             _serial++;
             var request = new JObject
@@ -48,6 +49,9 @@ namespace Kodaxa.RoboVision.Editor.Tests
 
             var response = Host.Dispatch(request);
             var actualOk = response.Value<bool>("ok");
+            // An audit of the response shape does not care which way the call
+            // went; asserting an outcome there would make it a different test.
+            if (allowEither) return response;
             if (ok)
             {
                 Assert.That(actualOk, Is.True, method + " failed: " + response.ToString(Newtonsoft.Json.Formatting.None));

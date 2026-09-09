@@ -32,8 +32,13 @@ namespace Kodaxa.RoboVision.Editor
             host.AddTool("object.delete", p => DeleteObject(p), mutating: true, stability: "alpha");
             host.AddTool("object.transform", p => TransformObject(p), mutating: true, stability: "alpha");
             host.AddTool("transaction.begin", p => host.Transactions.Begin(p, host.CurrentClientId), stability: "alpha", transactionControl: true);
-            host.AddTool("transaction.commit", p => host.Transactions.Commit(p), stability: "alpha", transactionControl: true);
-            host.AddTool("transaction.rollback", p => host.Transactions.Rollback(p), mutating: true, stability: "alpha", transactionControl: true);
+            host.AddTool("transaction.commit", p => host.Transactions.Commit(p, host.CurrentClientId), stability: "alpha", transactionControl: true);
+            host.AddTool("transaction.rollback", p => host.Transactions.Rollback(p, host.CurrentClientId), mutating: true, stability: "alpha", transactionControl: true);
+            // Adoption is how an interrupted transaction gets an owner again, so
+            // it must reach the host without one — and it proves authority with
+            // a token rather than with the connection it arrives on.
+            host.AddTool("transaction.adopt", p => host.Transactions.Adopt(p, host.CurrentClientId), stability: "alpha", transactionControl: true);
+            host.AddTool("transaction.discard", p => host.Transactions.Discard(p, host.CurrentClientId), stability: "alpha", transactionControl: true);
         }
 
         private static SceneRead ReadOf(JObject stored)
