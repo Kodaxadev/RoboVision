@@ -30,10 +30,31 @@ namespace Kodaxa.RoboVision.Editor
             host.AddTool("transaction.rollback", p => host.Transactions.Rollback(p), mutating: true, stability: "alpha", transactionControl: true);
         }
 
+        /// <summary>Strip editor bookkeeping that is not authored state.</summary>
+        /// <remarks>
+        /// scene.isDirty describes whether the editor thinks the scene needs
+        /// saving, not what the scene contains, and Unity flips it
+        /// asynchronously after an edit. Hashing it meant a fingerprint could
+        /// move with no scene change at all, which the host then reported as an
+        /// out-of-band edit and refused to roll back on. It stays in the
+        /// reported state, where it is useful, and out of the hash, where it is
+        /// actively harmful.
+        /// </remarks>
+        private static JToken HashableState(JObject state)
+        {
+            var copy = (JObject)state.DeepClone();
+            var scenes = copy["scenes"] as JArray;
+            if (scenes != null)
+            {
+                foreach (var scene in scenes.OfType<JObject>()) scene.Remove("dirty");
+            }
+            return copy;
+        }
+
         internal static string ComputeFingerprint()
         {
             var state = CaptureState();
-            return HashToken(state);
+            return HashToken(HashableState(state));
         }
 
         private static JObject Describe(RoboVisionHost host, JObject parameters)
@@ -48,7 +69,7 @@ namespace Kodaxa.RoboVision.Editor
         private static JObject Snapshot(RoboVisionHost host, JObject parameters)
         {
             var state = CaptureState();
-            var fingerprint = HashToken(state);
+            var fingerprint = HashToken(HashableState(state));
             var id = "snap:" + Guid.NewGuid();
             var snapshot = new JObject { ["fingerprint"] = fingerprint, ["state"] = state };
             Snapshots[id] = snapshot;
@@ -69,7 +90,7 @@ namespace Kodaxa.RoboVision.Editor
             var deleted = beforeObjects.Keys.Except(afterObjects.Keys).OrderBy(x => x).Select(x => new JObject { ["id"] = x, ["name"] = beforeObjects[x].Value<string>("name") });
             var changed = beforeObjects.Keys.Intersect(afterObjects.Keys).Where(x => !JToken.DeepEquals(beforeObjects[x], afterObjects[x])).OrderBy(x => x)
                 .Select(x => new JObject { ["id"] = x, ["before"] = beforeObjects[x], ["after"] = afterObjects[x] });
-            var afterFingerprint = HashToken(afterState);
+            var afterFingerprint = HashToken(HashableState(afterState));
             return new JObject
             {
                 ["from_snapshot"] = id,
