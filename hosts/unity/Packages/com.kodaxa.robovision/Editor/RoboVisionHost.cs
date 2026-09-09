@@ -12,7 +12,9 @@ namespace Kodaxa.RoboVision.Editor
     {
         public readonly string Code;
         public readonly bool Retryable;
-        public readonly JToken Data;
+        // Deliberately shadows Exception.Data: this carries the structured
+        // RoboVision error payload, not the base class's IDictionary.
+        public new readonly JToken Data;
 
         public RoboVisionException(string code, string message, bool retryable = false, JToken data = null) : base(message)
         {
@@ -121,7 +123,7 @@ namespace Kodaxa.RoboVision.Editor
         public void Start(int port = DefaultPort)
         {
             if (Running) return;
-            _server = new RoboVisionServer(port, Dispatch);
+            _server = new RoboVisionServer(port, Dispatch, Transactions.ClientDisconnected);
             _server.Start();
             _dirty = true;
             RefreshDirtyState();
@@ -160,6 +162,26 @@ namespace Kodaxa.RoboVision.Editor
             return modifications;
         }
 
+        /// <summary>Service the socket once from the caller's thread.</summary>
+        /// <remarks>
+        /// Normally EditorApplication.update drives this. A harness running under
+        /// -executeMethod holds the editor loop for the whole call, so nothing
+        /// would ever answer an external client while it waits. Such a driver
+        /// pumps explicitly rather than sleeping and hoping.
+        /// </remarks>
+        internal void ServiceTransportOnce() => Update();
+
+        /// <summary>Identifies the caller of the request being dispatched.</summary>
+        /// <remarks>
+        /// 0 means an in-process caller such as a menu action or a test; socket
+        /// connections are numbered from 1. It exists so the concurrency policy
+        /// can distinguish callers rather than treating the whole editor as one
+        /// anonymous client.
+        /// </remarks>
+        internal const long LocalClientId = 0;
+
+        internal long CurrentClientId { get; private set; } = LocalClientId;
+
         public void MarkDirty() => _dirty = true;
 
         private void RefreshDirtyState()
@@ -173,6 +195,30 @@ namespace Kodaxa.RoboVision.Editor
             }
             _fingerprint = current;
             _dirty = false;
+        }
+
+        /// <summary>
+        /// Re-read the scene before a mutation is allowed to run.
+        /// </summary>
+        /// <remarks>
+        /// hierarchyChanged and postprocessModifications are notifications, not
+        /// guarantees. The transport also dispatches up to eight requests per
+        /// editor update, so a burst runs with no tick in between and the dirty
+        /// flag can still be clear while the scene has moved. Trusting it would
+        /// let a stale if_revision pass the concurrency check and let an
+        /// out-of-band edit go unnoticed inside a transaction.
+        /// </remarks>
+        private string Resync()
+        {
+            var current = RoboVisionSceneTools.ComputeFingerprint();
+            if (_fingerprint != null && !String.Equals(_fingerprint, current, StringComparison.Ordinal))
+            {
+                if (Transactions.Active) Transactions.MarkExternalChange(current);
+                _revision++;
+            }
+            _fingerprint = current;
+            _dirty = false;
+            return current;
         }
 
         internal void AcceptOwnMutation()
@@ -189,16 +235,23 @@ namespace Kodaxa.RoboVision.Editor
             _dirty = false;
         }
 
-        private JObject Dispatch(JObject raw)
+        // internal so the package's EditMode tests can drive the host through the
+        // same entry point the transport uses, rather than a test-only shim.
+        internal JObject Dispatch(JObject raw) => Dispatch(raw, LocalClientId);
+
+        internal JObject Dispatch(JObject raw, long clientId)
         {
+            CurrentClientId = clientId;
             var watch = Stopwatch.StartNew();
-            var requestId = raw.Value<string>("id") ?? "invalid";
+            var requestId = raw.Value<string>("id");
             RoboVisionTransactions.OperationCheckpoint checkpoint = null;
             try
             {
                 RefreshDirtyState();
                 if (raw.Value<string>("rv") != ProtocolVersion)
                     throw new RoboVisionException("PROTOCOL_MISMATCH", "expected protocol " + ProtocolVersion);
+                // Checked before defaulting: coalescing first made this unreachable,
+                // so a request with no id was accepted and answered as "invalid".
                 if (String.IsNullOrWhiteSpace(requestId))
                     throw new RoboVisionException("INVALID_REQUEST", "id must be a non-empty string");
                 var method = raw.Value<string>("method");
@@ -207,6 +260,30 @@ namespace Kodaxa.RoboVision.Editor
                 var parameters = raw["params"] as JObject ?? new JObject();
                 if (!_tools.TryGetValue(method, out var spec))
                     throw new RoboVisionException("UNKNOWN_METHOD", "unknown method: " + method);
+
+                // Concurrency policy: a transaction belongs to the connection
+                // that opened it. Another client's mutation would otherwise join
+                // that transaction silently and be rolled back with it, so it is
+                // refused rather than guessed at. Reads stay open to everyone,
+                // and transaction control is allowed so an orphaned transaction
+                // can be finished deliberately.
+                if (spec.Mutating && !spec.TransactionControl && Transactions.Active
+                    && Transactions.ActiveOwner != clientId)
+                {
+                    throw new RoboVisionException(
+                        "TRANSACTION_FOREIGN",
+                        "another client holds the active transaction",
+                        true,
+                        new JObject
+                        {
+                            ["active"] = Transactions.ActiveState(),
+                            ["your_client"] = clientId
+                        });
+                }
+
+                string checkpointFingerprint = null;
+                if (spec.Mutating || spec.TransactionControl)
+                    checkpointFingerprint = Resync();
 
                 var revisionToken = raw["if_revision"];
                 if (spec.Mutating && revisionToken != null && revisionToken.Type != JTokenType.Null)
@@ -221,7 +298,7 @@ namespace Kodaxa.RoboVision.Editor
                 }
 
                 if (spec.Mutating && !spec.TransactionControl)
-                    checkpoint = Transactions.PrepareMutation(method);
+                    checkpoint = Transactions.PrepareMutation(method, checkpointFingerprint);
 
                 var result = spec.Handler(parameters);
                 if (spec.Mutating && (!spec.TransactionControl || method == "transaction.rollback"))
@@ -231,7 +308,7 @@ namespace Kodaxa.RoboVision.Editor
                 return new JObject
                 {
                     ["rv"] = ProtocolVersion,
-                    ["id"] = requestId,
+                    ["id"] = requestId ?? "invalid",
                     ["ok"] = true,
                     ["revision"] = _revision,
                     ["result"] = result,
@@ -260,7 +337,7 @@ namespace Kodaxa.RoboVision.Editor
                 return new JObject
                 {
                     ["rv"] = ProtocolVersion,
-                    ["id"] = requestId,
+                    ["id"] = requestId ?? "invalid",
                     ["ok"] = false,
                     ["revision"] = _revision,
                     ["error"] = error,
@@ -325,7 +402,7 @@ namespace Kodaxa.RoboVision.Editor
             return new JObject
             {
                 ["rv"] = ProtocolVersion,
-                ["id"] = requestId,
+                ["id"] = requestId ?? "invalid",
                 ["ok"] = false,
                 ["revision"] = _revision,
                 ["error"] = error,
@@ -453,6 +530,17 @@ namespace Kodaxa.RoboVision.Editor
                         ["transaction"] = new JObject
                         {
                             ["active"] = Transactions.Active,
+                            // Surfaced so a client can discover a transaction
+                            // another connection opened — including one whose
+                            // owner disconnected and left it waiting — instead
+                            // of only learning about it when a mutation is
+                            // refused.
+                            ["state"] = Transactions.ActiveState(),
+                            ["your_client"] = CurrentClientId,
+                            ["ownership"] = "a transaction belongs to the connection that opened it; "
+                                + "mutations from other connections are refused with TRANSACTION_FOREIGN "
+                                + "while it is active. If the owner disconnects the transaction is marked "
+                                + "orphaned and any client may commit or roll it back.",
                             ["external_change_protection"] = true,
                             ["failed_operation_recovery"] = true
                         }

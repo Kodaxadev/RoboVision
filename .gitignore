@@ -13,3 +13,8 @@ Thumbs.db
 *.blend2
 *.tmp
 artifacts/
+.unity-compile-refs/
+.unity-testbed/
+artifacts/
+.unity-restart/
+.unity-soak/

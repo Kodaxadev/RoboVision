@@ -10,12 +10,17 @@ import bpy
 from bpy.app.handlers import persistent
 
 from .registry import HostError, ToolRegistry
-from .snapshots import scene_snapshot
+from .snapshots import DEEP, scene_snapshot
 from .transactions import TransactionManager
 from .transport import NonBlockingJsonServer
 
 PROTOCOL_VERSION = "1.0"
 HOST_VERSION = "0.1.0"
+
+# Blender handlers are module-level functions, so the notification fans out to
+# every runtime that asked for it. The add-on uses one; an integration harness
+# may build its own instance and must see the same change notifications.
+_ACTIVE_RUNTIMES: "set[RoboVisionRuntime]" = set()
 
 
 class RoboVisionRuntime:
@@ -26,6 +31,7 @@ class RoboVisionRuntime:
         self.revision = 0
         self._dirty = True
         self._last_fingerprint: str | None = None
+        self._last_snapshot: dict[str, Any] | None = None
         self._timer_fn = self._tick
         self._registered_tools = False
         self._snapshots: dict[str, dict[str, Any]] = {}
@@ -38,19 +44,40 @@ class RoboVisionRuntime:
     def start(self, port: int = 9877) -> None:
         if self.running:
             return
-        if not self._registered_tools:
-            from .ops import register_all
-
-            register_all(self.registry)
-            self._registered_tools = True
+        self.registry_ready()
         self.transport = NonBlockingJsonServer(port=port)
         self.transport.start()
+        self.install_handlers()
+        if not bpy.app.timers.is_registered(self._timer_fn):
+            bpy.app.timers.register(self._timer_fn, first_interval=0.02, persistent=True)
+
+    def install_handlers(self) -> None:
+        """Subscribe to editor change notifications and take a baseline.
+
+        Exposed separately from `start()` so an integration harness can exercise
+        the same out-of-band change detection the add-on uses without opening a
+        socket. A test that skipped this would be checking different code from
+        the one shipped.
+        """
+        self.registry_ready()
+        _ACTIVE_RUNTIMES.add(self)
         self._dirty = True
         self._refresh_dirty_state()
         if _depsgraph_dirty not in bpy.app.handlers.depsgraph_update_post:
             bpy.app.handlers.depsgraph_update_post.append(_depsgraph_dirty)
-        if not bpy.app.timers.is_registered(self._timer_fn):
-            bpy.app.timers.register(self._timer_fn, first_interval=0.02, persistent=True)
+
+    def remove_handlers(self) -> None:
+        _ACTIVE_RUNTIMES.discard(self)
+        if not _ACTIVE_RUNTIMES and _depsgraph_dirty in bpy.app.handlers.depsgraph_update_post:
+            bpy.app.handlers.depsgraph_update_post.remove(_depsgraph_dirty)
+
+    def registry_ready(self) -> None:
+        if self._registered_tools:
+            return
+        from .ops import register_all
+
+        register_all(self.registry)
+        self._registered_tools = True
 
     def stop(self) -> None:
         if self.transport is not None:
@@ -58,8 +85,7 @@ class RoboVisionRuntime:
             self.transport = None
         if bpy.app.timers.is_registered(self._timer_fn):
             bpy.app.timers.unregister(self._timer_fn)
-        if _depsgraph_dirty in bpy.app.handlers.depsgraph_update_post:
-            bpy.app.handlers.depsgraph_update_post.remove(_depsgraph_dirty)
+        self.remove_handlers()
 
     def mark_dirty(self) -> None:
         # Handler callback only marks dirty; it deliberately does not inspect or mutate Blender data.
@@ -78,18 +104,42 @@ class RoboVisionRuntime:
     def _refresh_dirty_state(self) -> None:
         if not self._dirty:
             return
-        current = scene_snapshot(deep=True)
+        current = scene_snapshot(level=DEEP)
         fingerprint = current["fingerprint"]
         if self._last_fingerprint is not None and fingerprint != self._last_fingerprint:
             if self.transactions.active is not None:
                 self.transactions.mark_external_change(fingerprint)
             self.revision += 1
         self._last_fingerprint = fingerprint
+        self._last_snapshot = current
         self._dirty = False
 
+    def resync(self) -> dict[str, Any]:
+        """Re-read the scene authoritatively before a mutation is allowed to run.
+
+        `depsgraph_update_post` is a notification, not a guarantee: a script or
+        another add-on can change datablocks and the handler may not have run by
+        the time the next request is dispatched. Trusting the dirty flag here
+        would let a mutation checkpoint against a scene that no longer exists and
+        would let a stale `if_revision` pass the concurrency check. Mutations
+        therefore pay for one honest deep read, which also serves as their
+        recovery checkpoint.
+        """
+        current = scene_snapshot(level=DEEP)
+        fingerprint = current["fingerprint"]
+        if self._last_fingerprint is not None and fingerprint != self._last_fingerprint:
+            if self.transactions.active is not None:
+                self.transactions.mark_external_change(fingerprint)
+            self.revision += 1
+        self._last_fingerprint = fingerprint
+        self._last_snapshot = current
+        self._dirty = False
+        return current
+
     def _accept_own_mutation(self) -> None:
-        current = scene_snapshot(deep=True)
+        current = scene_snapshot(level=DEEP)
         self._last_fingerprint = current["fingerprint"]
+        self._last_snapshot = current
         self._dirty = False
         self.revision += 1
 
@@ -99,6 +149,7 @@ class RoboVisionRuntime:
         try:
             recovery = self.transactions.recover_failed_mutation(before)
             self._last_fingerprint = before["fingerprint"]
+            self._last_snapshot = before
             self._dirty = False
             return None, recovery
         except HostError as recovery_error:
@@ -142,6 +193,14 @@ class RoboVisionRuntime:
             spec = self.registry.get(method)
             if spec.requires_ui and bpy.app.background:
                 raise HostError("INVALID_CONTEXT", f"{method} requires an interactive Blender UI")
+
+            is_transaction_control = method.startswith("transaction.")
+            checkpoint: dict[str, Any] | None = None
+            if spec.mutating:
+                # Establish the truth first: the concurrency check below is only
+                # meaningful against a revision that reflects the scene as it is
+                # right now, not as the last notification left it.
+                checkpoint = self.resync()
             if spec.mutating and if_revision is not None and if_revision != self.revision:
                 raise HostError(
                     "STALE_REVISION",
@@ -150,9 +209,8 @@ class RoboVisionRuntime:
                     retryable=True,
                 )
 
-            is_transaction_control = method.startswith("transaction.")
-            if spec.mutating and not is_transaction_control:
-                mutation_before = self.transactions.prepare_mutation(method)
+            if checkpoint is not None and not is_transaction_control:
+                mutation_before = self.transactions.prepare_mutation(method, checkpoint)
 
             result = spec.handler(params, self)
 
@@ -246,4 +304,5 @@ RUNTIME = RoboVisionRuntime()
 
 @persistent
 def _depsgraph_dirty(_scene=None, _depsgraph=None) -> None:
-    RUNTIME.mark_dirty()
+    for runtime in tuple(_ACTIVE_RUNTIMES):
+        runtime.mark_dirty()

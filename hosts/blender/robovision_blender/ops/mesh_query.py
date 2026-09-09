@@ -101,8 +101,8 @@ def _sort_key(item: dict[str, Any], sort_by: str):
     raise HostError("INVALID_PARAMS", "sort_by must be index, area, length, valence, normal_dot, x, y, or z (prefix - for descending)")
 
 
-def query(params, _runtime):
-    obj = _mesh_object(params.get("object"))
+def query(params, runtime):
+    obj = _mesh_object(params.get("object"), runtime=runtime)
     domain = str(params.get("domain", "FACE")).upper()
     if domain not in {"VERTEX", "EDGE", "FACE"}:
         raise HostError("INVALID_PARAMS", "domain must be VERTEX, EDGE, or FACE")
@@ -228,8 +228,8 @@ def query(params, _runtime):
         bm.free()
 
 
-def components(params, _runtime):
-    obj = _mesh_object(params.get("object"))
+def components(params, runtime):
+    obj = _mesh_object(params.get("object"), runtime=runtime)
     space = _space(params)
     include_indices = bool(params.get("include_indices", True))
     max_components = max(1, min(10_000, int(params.get("max_components", 1_000))))

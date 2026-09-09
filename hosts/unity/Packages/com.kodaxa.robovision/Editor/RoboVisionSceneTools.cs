@@ -25,15 +25,36 @@ namespace Kodaxa.RoboVision.Editor
             host.AddTool("object.create", p => CreateObject(p), mutating: true, stability: "alpha");
             host.AddTool("object.delete", p => DeleteObject(p), mutating: true, stability: "alpha");
             host.AddTool("object.transform", p => TransformObject(p), mutating: true, stability: "alpha");
-            host.AddTool("transaction.begin", p => host.Transactions.Begin(p), stability: "alpha", transactionControl: true);
+            host.AddTool("transaction.begin", p => host.Transactions.Begin(p, host.CurrentClientId), stability: "alpha", transactionControl: true);
             host.AddTool("transaction.commit", p => host.Transactions.Commit(p), stability: "alpha", transactionControl: true);
             host.AddTool("transaction.rollback", p => host.Transactions.Rollback(p), mutating: true, stability: "alpha", transactionControl: true);
+        }
+
+        /// <summary>Strip editor bookkeeping that is not authored state.</summary>
+        /// <remarks>
+        /// scene.isDirty describes whether the editor thinks the scene needs
+        /// saving, not what the scene contains, and Unity flips it
+        /// asynchronously after an edit. Hashing it meant a fingerprint could
+        /// move with no scene change at all, which the host then reported as an
+        /// out-of-band edit and refused to roll back on. It stays in the
+        /// reported state, where it is useful, and out of the hash, where it is
+        /// actively harmful.
+        /// </remarks>
+        private static JToken HashableState(JObject state)
+        {
+            var copy = (JObject)state.DeepClone();
+            var scenes = copy["scenes"] as JArray;
+            if (scenes != null)
+            {
+                foreach (var scene in scenes.OfType<JObject>()) scene.Remove("dirty");
+            }
+            return copy;
         }
 
         internal static string ComputeFingerprint()
         {
             var state = CaptureState();
-            return HashToken(state);
+            return HashToken(HashableState(state));
         }
 
         private static JObject Describe(RoboVisionHost host, JObject parameters)
@@ -48,7 +69,7 @@ namespace Kodaxa.RoboVision.Editor
         private static JObject Snapshot(RoboVisionHost host, JObject parameters)
         {
             var state = CaptureState();
-            var fingerprint = HashToken(state);
+            var fingerprint = HashToken(HashableState(state));
             var id = "snap:" + Guid.NewGuid();
             var snapshot = new JObject { ["fingerprint"] = fingerprint, ["state"] = state };
             Snapshots[id] = snapshot;
@@ -69,7 +90,7 @@ namespace Kodaxa.RoboVision.Editor
             var deleted = beforeObjects.Keys.Except(afterObjects.Keys).OrderBy(x => x).Select(x => new JObject { ["id"] = x, ["name"] = beforeObjects[x].Value<string>("name") });
             var changed = beforeObjects.Keys.Intersect(afterObjects.Keys).Where(x => !JToken.DeepEquals(beforeObjects[x], afterObjects[x])).OrderBy(x => x)
                 .Select(x => new JObject { ["id"] = x, ["before"] = beforeObjects[x], ["after"] = afterObjects[x] });
-            var afterFingerprint = HashToken(afterState);
+            var afterFingerprint = HashToken(HashableState(afterState));
             return new JObject
             {
                 ["from_snapshot"] = id,
@@ -152,10 +173,10 @@ namespace Kodaxa.RoboVision.Editor
                 if (resolved == null) throw new RoboVisionException("NOT_FOUND", "Unity object no longer resolves: " + reference);
                 return resolved;
             }
-            if (reference.StartsWith("unity:instance:", StringComparison.Ordinal) && Int32.TryParse(reference.Substring("unity:instance:".Length), out var instanceId))
+            if (reference.StartsWith(RoboVisionSessionHandles.Prefix, StringComparison.Ordinal))
             {
-                var resolved = EditorUtility.InstanceIDToObject(instanceId) as GameObject;
-                if (resolved == null) throw new RoboVisionException("NOT_FOUND", "Unity instance no longer resolves: " + reference);
+                var resolved = RoboVisionSessionHandles.Resolve(reference) as GameObject;
+                if (resolved == null) throw new RoboVisionException("NOT_FOUND", "Unity session handle no longer resolves: " + reference);
                 return resolved;
             }
             throw new RoboVisionException("INVALID_PARAMS", "object must be a RoboVision Unity id");
@@ -171,30 +192,49 @@ namespace Kodaxa.RoboVision.Editor
                 return "unity:" + text;
             }
             persistent = false;
-            return "unity:instance:" + obj.GetInstanceID();
+            return RoboVisionSessionHandles.Token(obj);
+        }
+
+        private static JObject SceneState(UnityEngine.SceneManagement.Scene scene, string kind)
+        {
+            var objects = scene.GetRootGameObjects()
+                .SelectMany(root => root.GetComponentsInChildren<Transform>(true))
+                .Select(t => t.gameObject)
+                .Distinct()
+                .Select(ObjectState)
+                .OrderBy(o => o.Value<string>("id"), StringComparer.Ordinal);
+            return new JObject
+            {
+                ["name"] = scene.name,
+                ["path"] = scene.path,
+                ["build_index"] = scene.buildIndex,
+                ["dirty"] = scene.isDirty,
+                ["kind"] = kind,
+                ["objects"] = new JArray(objects)
+            };
         }
 
         private static JObject CaptureState()
         {
+            // A Prefab Stage edits its contents in a preview scene that
+            // SceneManager does not enumerate. Reporting only SceneManager's
+            // scenes meant that with a prefab open for editing the host
+            // described an empty project, so an agent would believe there was
+            // nothing there and create objects in the wrong place.
+            var stage = UnityEditor.SceneManagement.PrefabStageUtility.GetCurrentPrefabStage();
+            if (stage != null && stage.scene.IsValid())
+            {
+                var staged = SceneState(stage.scene, "prefab_stage");
+                staged["prefab_asset_path"] = stage.assetPath;
+                return new JObject { ["scenes"] = new JArray { staged } };
+            }
+
             var scenes = new JArray();
             for (var i = 0; i < SceneManager.sceneCount; i++)
             {
                 var scene = SceneManager.GetSceneAt(i);
                 if (!scene.isLoaded) continue;
-                var objects = scene.GetRootGameObjects()
-                    .SelectMany(root => root.GetComponentsInChildren<Transform>(true))
-                    .Select(t => t.gameObject)
-                    .Distinct()
-                    .Select(ObjectState)
-                    .OrderBy(o => o.Value<string>("id"), StringComparer.Ordinal);
-                scenes.Add(new JObject
-                {
-                    ["name"] = scene.name,
-                    ["path"] = scene.path,
-                    ["build_index"] = scene.buildIndex,
-                    ["dirty"] = scene.isDirty,
-                    ["objects"] = new JArray(objects)
-                });
+                scenes.Add(SceneState(scene, "scene"));
             }
             return new JObject { ["scenes"] = scenes };
         }

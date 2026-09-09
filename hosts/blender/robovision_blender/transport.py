@@ -127,7 +127,19 @@ class NonBlockingJsonServer:
             self._close(client)
 
     def _close_after_flush(self, client: _Client) -> None:
+        """Deliver a refusal, then half-close so the peer can still read it.
+
+        Closing outright while the peer is mid-send resets the connection and
+        the client sees a transport reset instead of the reason it was refused.
+        Shutting down the write side first gives the error its best chance of
+        arriving; a peer that keeps writing can still force a reset, which is a
+        property of TCP rather than something the host can prevent.
+        """
         self._flush_client(client)
+        try:
+            client.sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
         if not client.send_buffer:
             self._close(client)
 

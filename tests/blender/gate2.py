@@ -12,7 +12,7 @@ HOST_ROOT = ROOT / "hosts" / "blender"
 if str(HOST_ROOT) not in sys.path:
     sys.path.insert(0, str(HOST_ROOT))
 
-from robovision_blender.ops import register_all  # noqa: E402
+
 from robovision_blender.runtime import PROTOCOL_VERSION, RoboVisionRuntime  # noqa: E402
 
 ARTIFACT_DIR = ROOT / "artifacts" / "blender-gate2"
@@ -50,9 +50,9 @@ def rgba_codes(path: Path) -> set[int]:
 def main() -> None:
     clean_scene()
     runtime = RoboVisionRuntime()
-    register_all(runtime.registry)
-    runtime._registered_tools = True
-    runtime._refresh_dirty_state()
+    # install_handlers() is what the shipped add-on calls, so the gate exercises
+    # the same out-of-band change detection rather than a test-only shortcut.
+    runtime.install_handlers()
     calls = []
     serial = 0
 

@@ -14,6 +14,14 @@ import gpu
 from gpu_extras.batch import batch_for_shader
 from mathutils import Matrix, Vector
 
+try:  # numpy ships with Blender; the fallback keeps perception working without it.
+    import numpy as np
+except ImportError:  # pragma: no cover - Blender always bundles numpy
+    np = None
+
+_UBYTE = np.uint8 if np is not None else None
+_FLOAT = np.float32 if np is not None else None
+
 from ..context import view3d_override
 from ..identity import object_id
 from ..registry import HostError
@@ -31,16 +39,46 @@ def _flatten(value) -> Iterator[float | int]:
         yield value
 
 
-def _buffer_values(buffer) -> list[float | int]:
-    return list(_flatten(buffer.to_list()))
+def _buffer_values(buffer, dtype=None):
+    """Flatten a GPU readback into a contiguous array of channel values.
+
+    The nesting from `Buffer.to_list()` is the authoritative pixel order, so the
+    conversion goes through it rather than through the Buffer's memory. Reading
+    the raw memory looks tempting and is wrong: the Buffer exposes a
+    non-contiguous, channel-major view, so `bytes(buffer)` and
+    `np.asarray(buffer)` both reorder the image and silently produce a blank
+    object-id pass. Verified equal to the recursive flatten at 8x4, 5x3, 16x9
+    and 1920x1080 with spatially varying content.
+
+    Letting numpy do the flattening still removes the recursive per-value
+    generator, which alone cost 2.4s for one 1080p RGBA pass.
+    """
+    nested = buffer.to_list()
+    if np is not None:
+        return np.array(nested, dtype=dtype).reshape(-1)
+    return list(_flatten(nested))
+
+
+def _as_bytes(values) -> bytes:
+    if np is not None and isinstance(values, np.ndarray):
+        return values.astype(np.uint8, copy=False).tobytes()
+    return bytes(int(value) & 0xFF for value in values)
 
 
 def _save_png(path: Path, values, width: int, height: int, *, ubyte: bool = True, data_image: bool = True) -> None:
-    flat = values if isinstance(values, list) else list(values)
     expected = width * height * 4
-    if len(flat) != expected:
-        raise HostError("HOST_EXCEPTION", f"pixel buffer size mismatch for {path.name}: {len(flat)} != {expected}")
-    pixels = [float(value) / 255.0 for value in flat] if ubyte else [float(value) for value in flat]
+    if np is not None and isinstance(values, np.ndarray):
+        flat = values.reshape(-1)
+        if flat.size != expected:
+            raise HostError("HOST_EXCEPTION", f"pixel buffer size mismatch for {path.name}: {flat.size} != {expected}")
+        pixels = flat.astype(np.float32)
+        if ubyte:
+            pixels = pixels / np.float32(255.0)
+    else:
+        flat = values if isinstance(values, list) else list(values)
+        if len(flat) != expected:
+            raise HostError("HOST_EXCEPTION", f"pixel buffer size mismatch for {path.name}: {len(flat)} != {expected}")
+        pixels = [float(value) / 255.0 for value in flat] if ubyte else [float(value) for value in flat]
     image = bpy.data.images.new(
         f"RoboVision-{uuid.uuid4().hex}",
         width=width,
@@ -208,9 +246,11 @@ def _draw_id_pass(width: int, height: int, view_matrix: Matrix, projection_matri
                                 shader.bind()
                                 shader.uniform_float("color", _palette_color(code))
                                 batch.draw(shader)
-            color_values = _buffer_values(framebuffer.read_color(0, 0, width, height, 4, 0, "UBYTE"))
+            color_values = _buffer_values(framebuffer.read_color(0, 0, width, height, 4, 0, "UBYTE"), _UBYTE)
             if mode == "object":
-                depth_values = [float(value) for value in _buffer_values(framebuffer.read_depth(0, 0, width, height))]
+                depth_values = _buffer_values(framebuffer.read_depth(0, 0, width, height), _FLOAT)
+                if np is None:
+                    depth_values = [float(value) for value in depth_values]
     finally:
         gpu.state.depth_mask_set(False)
         gpu.state.depth_test_set("NONE")
@@ -277,7 +317,7 @@ def _draw_normals(width: int, height: int, view_projection: Matrix, depsgraph):
                     continue
                 batch = batch_for_shader(shader, "TRIS", {"position": positions, "normal": normals})
                 batch.draw(shader)
-            values = _buffer_values(framebuffer.read_color(0, 0, width, height, 4, 0, "UBYTE"))
+            values = _buffer_values(framebuffer.read_color(0, 0, width, height, 4, 0, "UBYTE"), _UBYTE)
     finally:
         gpu.state.depth_mask_set(False)
         gpu.state.depth_test_set("NONE")
@@ -305,26 +345,46 @@ def _draw_viewport_pass(width: int, height: int, scene, view_layer, space, regio
         )
         with offscreen.bind():
             framebuffer = gpu.state.active_framebuffer_get()
-            return _buffer_values(framebuffer.read_color(0, 0, width, height, 4, 0, "UBYTE"))
+            return _buffer_values(framebuffer.read_color(0, 0, width, height, 4, 0, "UBYTE"), _UBYTE)
     finally:
         space.shading.type = old_shading
         space.overlay.show_overlays = old_overlays
         offscreen.free()
 
 
-def _depth_preview(depth: list[float]) -> tuple[list[float], dict[str, Any]]:
+def _depth_preview(depth) -> tuple[Any, dict[str, Any]]:
+    """Normalise window depth into a viewable grey ramp plus its statistics."""
+    if np is not None and isinstance(depth, np.ndarray):
+        values = depth.reshape(-1).astype(np.float32)
+        mask = values < 0.999999
+        count = int(mask.sum())
+        if count == 0:
+            rgba = np.zeros((values.size, 4), dtype=np.float32)
+            rgba[:, 3] = 1.0
+            return rgba.reshape(-1), {"foreground_pixels": 0, "min": None, "max": None}
+        minimum = float(values[mask].min())
+        maximum = float(values[mask].max())
+        span = max(maximum - minimum, 1e-12)
+        intensity = np.where(mask, 1.0 - ((values - minimum) / span), 0.0).astype(np.float32)
+        rgba = np.empty((values.size, 4), dtype=np.float32)
+        rgba[:, 0] = intensity
+        rgba[:, 1] = intensity
+        rgba[:, 2] = intensity
+        rgba[:, 3] = 1.0
+        return rgba.reshape(-1), {"foreground_pixels": count, "min": minimum, "max": maximum}
+
     foreground = [value for value in depth if value < 0.999999]
     if not foreground:
-        rgba = [0.0, 0.0, 0.0, 1.0] * len(depth)
-        return rgba, {"foreground_pixels": 0, "min": None, "max": None}
+        rgba_list = [0.0, 0.0, 0.0, 1.0] * len(depth)
+        return rgba_list, {"foreground_pixels": 0, "min": None, "max": None}
     minimum = min(foreground)
     maximum = max(foreground)
     span = max(maximum - minimum, 1e-12)
-    rgba: list[float] = []
+    rgba_list = []
     for value in depth:
-        intensity = 0.0 if value >= 0.999999 else 1.0 - ((value - minimum) / span)
-        rgba.extend((intensity, intensity, intensity, 1.0))
-    return rgba, {"foreground_pixels": len(foreground), "min": minimum, "max": maximum}
+        intensity_value = 0.0 if value >= 0.999999 else 1.0 - ((value - minimum) / span)
+        rgba_list.extend((intensity_value, intensity_value, intensity_value, 1.0))
+    return rgba_list, {"foreground_pixels": len(foreground), "min": minimum, "max": maximum}
 
 
 def capture_bundle(params, runtime):
@@ -397,7 +457,7 @@ def capture_bundle(params, runtime):
                 preview = directory / "object_ids.png"
                 raw = directory / "object_ids.rgba8"
                 _save_png(preview, object_values, width, height, ubyte=True, data_image=True)
-                raw.write_bytes(bytes(int(value) & 0xFF for value in object_values))
+                raw.write_bytes(_as_bytes(object_values))
                 artifacts["object_ids"] = {
                     "preview": _artifact(preview, "image", "image/png", encoding="rgb24-id"),
                     "raw": _artifact(raw, "data", "application/octet-stream", encoding="rgba8", width=width, height=height, origin="lower-left"),
@@ -409,7 +469,7 @@ def capture_bundle(params, runtime):
             preview = directory / "material_ids.png"
             raw = directory / "material_ids.rgba8"
             _save_png(preview, material_values, width, height, ubyte=True, data_image=True)
-            raw.write_bytes(bytes(int(value) & 0xFF for value in material_values))
+            raw.write_bytes(_as_bytes(material_values))
             artifacts["material_ids"] = {
                 "preview": _artifact(preview, "image", "image/png", encoding="rgb24-id"),
                 "raw": _artifact(raw, "data", "application/octet-stream", encoding="rgba8", width=width, height=height, origin="lower-left"),
@@ -421,7 +481,7 @@ def capture_bundle(params, runtime):
             preview = directory / "normals.png"
             raw = directory / "normals.rgba8"
             _save_png(preview, normal_values, width, height, ubyte=True, data_image=True)
-            raw.write_bytes(bytes(int(value) & 0xFF for value in normal_values))
+            raw.write_bytes(_as_bytes(normal_values))
             artifacts["normals"] = {
                 "preview": _artifact(preview, "image", "image/png", encoding="world-normal-rgb", decode="normal = rgb/255*2-1"),
                 "raw": _artifact(raw, "data", "application/octet-stream", encoding="rgba8", width=width, height=height, origin="lower-left"),
@@ -431,7 +491,10 @@ def capture_bundle(params, runtime):
             if object_depth is None:
                 _, object_depth, _ = _draw_id_pass(width, height, view_matrix, projection_matrix, depsgraph, "object")
             raw = directory / "depth.f32"
-            raw.write_bytes(array("f", object_depth).tobytes())
+            if np is not None and isinstance(object_depth, np.ndarray):
+                raw.write_bytes(object_depth.astype(np.float32, copy=False).tobytes())
+            else:
+                raw.write_bytes(array("f", object_depth).tobytes())
             preview_values, statistics = _depth_preview(object_depth)
             preview = directory / "depth.png"
             _save_png(preview, preview_values, width, height, ubyte=False, data_image=True)

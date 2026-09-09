@@ -177,12 +177,11 @@ namespace Kodaxa.RoboVision.Editor
                     throw new RoboVisionException("NOT_FOUND", "Unity object no longer resolves: " + reference);
                 return resolved;
             }
-            if (reference.StartsWith("unity:instance:", StringComparison.Ordinal) &&
-                Int32.TryParse(reference.Substring("unity:instance:".Length), out var instanceId))
+            if (reference.StartsWith(RoboVisionSessionHandles.Prefix, StringComparison.Ordinal))
             {
-                var resolved = EditorUtility.InstanceIDToObject(instanceId);
+                var resolved = RoboVisionSessionHandles.Resolve(reference);
                 if (resolved == null)
-                    throw new RoboVisionException("NOT_FOUND", "Unity instance no longer resolves: " + reference);
+                    throw new RoboVisionException("NOT_FOUND", "Unity session handle no longer resolves: " + reference);
                 return resolved;
             }
             throw new RoboVisionException("INVALID_PARAMS", "target must be a RoboVision Unity id");
@@ -193,7 +192,7 @@ namespace Kodaxa.RoboVision.Editor
             if (obj == null) return null;
             var text = GlobalObjectId.GetGlobalObjectIdSlow(obj).ToString();
             return text.StartsWith("GlobalObjectId_V1-0-", StringComparison.Ordinal)
-                ? "unity:instance:" + obj.GetInstanceID()
+                ? RoboVisionSessionHandles.Token(obj)
                 : "unity:" + text;
         }
 

@@ -20,6 +20,18 @@ namespace Kodaxa.RoboVision.Editor
         {
             var view = SceneView.lastActiveSceneView;
             if (view == null || view.camera == null)
+            {
+                // lastActiveSceneView stays null until a Scene view has been
+                // focused, so an editor that plainly has one open could still be
+                // refused. Fall back to any open Scene view before giving up.
+                foreach (SceneView candidate in SceneView.sceneViews)
+                {
+                    if (candidate == null || candidate.camera == null) continue;
+                    view = candidate;
+                    break;
+                }
+            }
+            if (view == null || view.camera == null)
                 throw new RoboVisionException("INVALID_CONTEXT", "no active SceneView with a camera is available");
             return view;
         }

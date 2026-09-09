@@ -14,24 +14,30 @@ namespace Kodaxa.RoboVision.Editor
 
         private sealed class ClientState
         {
+            public readonly long Id;
             public readonly Socket Socket;
             public readonly List<byte> Inbound = new List<byte>();
             public readonly List<byte> Outbound = new List<byte>();
 
-            public ClientState(Socket socket) { Socket = socket; }
+            public ClientState(long id, Socket socket) { Id = id; Socket = socket; }
         }
 
         private readonly List<ClientState> _clients = new List<ClientState>();
         private Socket _listener;
-        private readonly Func<JObject, JObject> _dispatch;
+        // Requests carry the connection they arrived on so the host can apply a
+        // concurrency policy instead of treating every client as the same caller.
+        private readonly Func<JObject, long, JObject> _dispatch;
+        private readonly Action<long> _onClientClosed;
+        private long _nextClientId;
 
         public int Port { get; }
         public bool Running => _listener != null;
 
-        public RoboVisionServer(int port, Func<JObject, JObject> dispatch)
+        public RoboVisionServer(int port, Func<JObject, long, JObject> dispatch, Action<long> onClientClosed = null)
         {
             Port = port;
             _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
+            _onClientClosed = onClientClosed;
         }
 
         public void Start()
@@ -70,7 +76,8 @@ namespace Kodaxa.RoboVision.Editor
                     if (!_listener.Poll(0, SelectMode.SelectRead)) return;
                     var socket = _listener.Accept();
                     socket.Blocking = false;
-                    _clients.Add(new ClientState(socket));
+                    _nextClientId++;
+                    _clients.Add(new ClientState(_nextClientId, socket));
                 }
                 catch (SocketException ex) when (ex.SocketErrorCode == SocketError.WouldBlock)
                 {
@@ -114,7 +121,7 @@ namespace Kodaxa.RoboVision.Editor
                 {
                     var text = Encoding.UTF8.GetString(raw);
                     var request = JObject.Parse(text);
-                    response = _dispatch(request);
+                    response = _dispatch(request, client.Id);
                 }
                 catch (Exception ex) when (ex is JsonException || ex is DecoderFallbackException)
                 {
@@ -163,8 +170,15 @@ namespace Kodaxa.RoboVision.Editor
 
         private void CloseClient(int index)
         {
-            try { _clients[index].Socket.Dispose(); } catch { }
+            var client = _clients[index];
+            try { client.Socket.Dispose(); } catch { }
             _clients.RemoveAt(index);
+            // A client that vanishes while holding a transaction must not leave
+            // the host wedged, so the host is told rather than left to guess.
+            if (_onClientClosed != null)
+            {
+                try { _onClientClosed(client.Id); } catch { }
+            }
         }
 
         public void Dispose()

@@ -5,17 +5,21 @@ import bpy
 
 from ..identity import normalize_object_ids, object_id
 from ..registry import HostError
-from ..snapshots import diff_snapshots, object_snapshot, scene_snapshot
+from ..snapshots import diff_snapshots, object_snapshot, resolve_level, scene_snapshot
 
 
 def describe(params, runtime):
-    deep = bool(params.get("deep", False))
+    level = resolve_level(params, default="shallow")
     repairs = normalize_object_ids()
     return {
         "scene": bpy.context.scene.name_full,
         "revision": runtime.revision,
         "frame": int(bpy.context.scene.frame_current),
-        "objects": [object_snapshot(obj, deep=deep) for obj in sorted(bpy.context.scene.objects, key=lambda item: object_id(item))],
+        "level": level,
+        "objects": [
+            object_snapshot(obj, level=level)
+            for obj in sorted(bpy.context.scene.objects, key=lambda item: object_id(item))
+        ],
         "identity_repairs": repairs,
     }
 
@@ -35,7 +39,7 @@ def search(params, _runtime):
 
 
 def snapshot(params, runtime):
-    snap = scene_snapshot(deep=bool(params.get("deep", True)))
+    snap = scene_snapshot(level=resolve_level(params))
     snapshot_id = runtime.store_snapshot(snap)
     return {"snapshot": snapshot_id, **snap}
 
@@ -45,7 +49,9 @@ def diff(params, runtime):
     if not isinstance(snapshot_id, str) or not snapshot_id:
         raise HostError("INVALID_PARAMS", "from_snapshot is required")
     before = runtime.get_snapshot(snapshot_id)
-    after = scene_snapshot(deep=bool(params.get("deep", True)))
+    # Compare like with like: a shallow "after" against a deep "before" would
+    # report equality it cannot actually support.
+    after = scene_snapshot(level=resolve_level(params, default=before.get("level", "deep")))
     return {"from_snapshot": snapshot_id, **diff_snapshots(before, after)}
 
 
