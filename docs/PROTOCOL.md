@@ -98,6 +98,7 @@ state. The catalog publishes each method's class as `reads`.
 - `INDETERMINATE`
 - `IN_PROGRESS`
 - `SEED_REQUIRED`
+- `CONTRACT_VIOLATION`
 - `EPOCH_SUPERSEDED`
 - `SEQUENCE_TOO_OLD`
 - `INVALID_CONTEXT`

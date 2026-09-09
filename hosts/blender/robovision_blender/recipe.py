@@ -21,6 +21,8 @@ import hashlib
 import json
 from typing import Any
 
+from .protocol import HOST_VERSION
+
 # The frame every operation on this host executes in, recorded with every recipe.
 #
 # Not a shared cross-editor space: this is Blender's native authoring frame, and
@@ -31,7 +33,58 @@ from typing import Any
 # rather than a story about someone's export settings.
 CANONICAL_FRAME = "rvframe:blender_z_up_right_handed_meters"
 
-RECIPE_SCHEMA = 1
+RECIPE_SCHEMA = 2
+
+
+def environment() -> dict[str, Any]:
+    """What was running, in enough detail to tell two executions apart.
+
+    A host version alone is only implementation identity if it is guaranteed to
+    change whenever execution semantics change, and nothing guarantees that. The
+    editor doing the work is part of the environment too: the same RoboVision
+    build against two Blender versions is not the same computation, and a recipe
+    that could not say so would claim a reproducibility it has no basis for.
+
+    This is deliberately versioned build identity rather than source hashing.
+    Neither proves identical output — only an output hash does, and recording
+    those is later work — so nothing here should be read as more than "the same
+    environment asked for the same thing".
+    """
+    import bpy
+
+    return {
+        "robovision": HOST_VERSION,
+        "recipe_schema": RECIPE_SCHEMA,
+        "editor": "blender",
+        "editor_version": bpy.app.version_string,
+        "frame": CANONICAL_FRAME,
+        **units(),
+    }
+
+
+def units() -> dict[str, Any]:
+    """What one unit of this scene actually is.
+
+    RoboVision's canonical frame means **one Blender unit is one metre**. Blender
+    keeps a `scale_length` that says how many metres one unit represents, and it
+    is a scene property a user can change: at 0.01, geometry that measures 2
+    units is 2cm, and an export that resolves units differently from the host
+    would rescale the asset while every operation still reported success. That is
+    exactly the class of silent failure this project exists to catch, so the
+    value is recorded in every recipe and reported rather than assumed.
+    """
+    import bpy
+
+    scene = getattr(bpy.context, "scene", None)
+    settings = getattr(scene, "unit_settings", None) if scene else None
+    scale = float(getattr(settings, "scale_length", 1.0) or 1.0)
+    return {
+        "unit_scale_length": round(scale, 9),
+        "unit_system": str(getattr(settings, "system", "NONE")),
+        # The canonical invariant, stated rather than silently assumed.
+        "canonical_unit": "1 blender unit == 1 robovision metre",
+        "unit_scale_is_canonical": abs(scale - 1.0) < 1e-9,
+    }
 
 # Never part of a recipe: these say which delivery this is, not what was asked
 # for. Hashing them would make every retry a different computation.
@@ -74,7 +127,7 @@ def recipe_hash(
         "method": method,
         "tool_version": tool_version,
         "determinism": determinism,
-        "frame": CANONICAL_FRAME,
+        "environment": environment(),
         "params": {key: value for key, value in sorted(params.items())
                    if key not in TRANSPORT_KEYS},
         "seeds": dict(sorted((seeds or {}).items())),

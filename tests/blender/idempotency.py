@@ -202,7 +202,7 @@ def a_rolled_back_operation_is_not_resurrected_by_a_retry(rv: Host) -> None:
     again = send(rv, "object.create", {"kind": "cube", "name": "Undone"}, key="k-in-tx", attempt=2)
     expect(again.get("replayed") is True,
            f"a retry after the transaction ended executed as new work: {again}")
-    expect(again.get("transaction_outcome") == "abandoned",
+    expect(again.get("original_execution", {}).get("transaction_outcome") == "abandoned",
            f"the replay did not say what became of the transaction: {again}")
 
 
@@ -305,6 +305,169 @@ def a_resumed_ledger_replays_a_terminal_record(rv: Host) -> None:
            "a durable terminal record did not replay after the bridge was rebuilt")
 
 
+def a_proved_non_application_survives_a_resume(rv: Host) -> None:
+    """Evidence retained, and still eligible to run.
+
+    A failed operation whose recovery proved the pre-operation fingerprint was
+    restored definitively did not apply, so the key may execute. Deleting the
+    live record made that true only until a bridge resumed from the ledger, which
+    still held the attempt and would have called it terminal — replaying a
+    response that was never produced. It is a durable state instead.
+    """
+    clean_scene()
+    created = rv.result("object.create", {"kind": "cube", "name": "Survivor"})["id"]
+    before = names()
+
+    failed = send(rv, "object.transform", {"object": created, "location": ["not", "a", "vector"]},
+                  key="k-proved")
+    expect(failed["ok"] is False, f"the bad transform succeeded: {failed}")
+    expect(names() == before, "the failed operation changed the scene")
+
+    record = rv.runtime.invocations.records["k-proved"]
+    expect(record.state == "proved_not_applied",
+           f"a provably ineffective attempt was left as {record.state}")
+
+    # The same recipe again: what must not happen is the key standing in the way.
+    # It is allowed through and fails for its own reason, not an idempotency one.
+    retry = send(rv, "object.transform", {"object": created, "location": ["not", "a", "vector"]},
+                 key="k-proved", attempt=2)
+    expect(code(retry) not in ("IDEMPOTENCY_MISMATCH", "IN_PROGRESS", "INDETERMINATE"),
+           f"the key blocked an attempt that provably did nothing: {retry}")
+    expect(code(retry) == code(failed),
+           f"the retry failed for a different reason than the original: {code(retry)}")
+
+    resumed = OperationLedger.open(rv.runtime.world_incarnation).resume()
+    rebuilt = IdempotencyLedger()
+    rebuilt.adopt(resumed, rv.runtime.world_incarnation)
+    for key, pair in resumed.items():
+        if (pair.get("result") or {}).get("outcome") == "proved_not_applied":
+            expect(rebuilt.records[key].state == "proved_not_applied",
+                   "a resumed bridge treated a provably ineffective attempt as completed")
+            expect(rebuilt.check(key, rebuilt.records[key].recipe, 2,
+                                 rv.runtime.world_incarnation) is None,
+                   "a resumed bridge refused to re-run an operation that never applied")
+            break
+    else:
+        raise AssertionError("the ledger did not record the proved non-application")
+
+
+def a_failed_recovery_does_not_leave_the_key_reserved(rv: Host) -> None:
+    """A reservation must not outlive the operation that made it.
+
+    The generic exception path returned before closing the record when automatic
+    recovery itself failed, so every later delivery of that key was answered
+    IN_PROGRESS about an operation that had long since stopped running — in the
+    same live bridge, with no reload needed to reach it.
+    """
+    clean_scene()
+    rv.result("scene.snapshot")
+
+    def explode(params, runtime):
+        bpy.ops.mesh.primitive_cube_add(location=(0.0, 0.0, 0.0))
+        bpy.context.active_object.name = "Residue"
+        raise RuntimeError("handler failed after changing the scene")
+
+    if "test.explode" not in [tool["name"] for tool in rv.runtime.registry.capabilities()]:
+        rv.runtime.registry.add("test.explode", explode, mutating=True,
+                                summary="Test-only failure after a side effect.")
+
+    first = send(rv, "test.explode", {}, key="k-exploded")
+    expect(first["ok"] is False, f"the failing handler reported success: {first}")
+
+    state = rv.runtime.invocations.records["k-exploded"].state
+    expect(state != "reserved",
+           f"the failed operation left its key reserved for the life of the bridge: {state}")
+
+    again = send(rv, "test.explode", {}, key="k-exploded", attempt=2)
+    expect(code(again) != "IN_PROGRESS",
+           f"a retry was told an operation that had stopped was still running: {again}")
+
+
+def one_key_means_one_side_effect_regardless_of_transaction(rv: Host) -> None:
+    """A transaction is recorded context, not a namespace for keys."""
+    clean_scene()
+    rv.result("scene.snapshot")
+    first_tx = rv.result("transaction.begin", {"label": "first"})["transaction"]
+    send(rv, "object.create", {"kind": "cube", "name": "Scoped"}, key="k-scoped")
+    rv.result("transaction.discard", {"transaction": first_tx})
+
+    second_tx = rv.result("transaction.begin", {"label": "second"})["transaction"]
+    after = names()
+    again = send(rv, "object.create", {"kind": "cube", "name": "Scoped"},
+                 key="k-scoped", attempt=2)
+    expect(again.get("replayed") is True,
+           f"one key meant a different side effect in another transaction: {again}")
+    expect(names() == after, f"reusing the key in another transaction created an object: {names()}")
+    rv.result("transaction.discard", {"transaction": second_tx})
+
+
+def a_replay_reports_the_original_execution_separately(rv: Host) -> None:
+    """The envelope is about now; the original execution is stated, not implied."""
+    clean_scene()
+    rv.result("scene.snapshot")
+    first = send(rv, "object.create", {"kind": "cube", "name": "Original"}, key="k-original")
+    original_revision = first["revision"]
+
+    rv.result("object.create", {"kind": "cube", "name": "Later"})
+    again = send(rv, "object.create", {"kind": "cube", "name": "Original"},
+                 key="k-original", attempt=2)
+
+    expect(again["revision"] > original_revision,
+           "the replay reported a stale revision as if it were current")
+    origin = again.get("original_execution")
+    expect(origin, f"the replay did not say when the operation actually ran: {again}")
+    expect(origin["post_revision"] == original_revision,
+           f"the original execution's revision was misreported: {origin}")
+    expect(origin.get("recipe_hash") and origin.get("request_id"),
+           f"the original execution was not identified: {origin}")
+    expect(origin.get("post_fingerprint"),
+           f"the original execution recorded no resulting fingerprint: {origin}")
+
+
+def the_autonomous_contract_requires_what_an_unattended_loop_needs(rv: Host) -> None:
+    clean_scene()
+    rv.result("scene.snapshot")
+    described = rv.result("scene.describe")
+    world, revision = described["world_incarnation"], described["revision"]
+
+    raw = {"rv": "1.0", "id": "contract-1", "method": "object.create",
+           "params": {"kind": "cube", "name": "Strict"}, "contract": "autonomous"}
+    refused = rv.runtime.dispatch(dict(raw))
+    expect(code(refused) == "CONTRACT_VIOLATION",
+           f"an autonomous mutation ran without its contract: {refused}")
+    missing = refused["error"]["data"]["missing"]
+    for field in ("expected_world", "if_revision", "idempotency_key", "attempt"):
+        expect(field in missing, f"the violation did not name {field}: {missing}")
+    expect(names() == [], "a contract violation still changed the scene")
+
+    complete = dict(raw)
+    complete.update(expected_world=world, if_revision=revision,
+                    idempotency_key="k-strict", attempt=1)
+    accepted = rv.runtime.dispatch(complete)
+    expect(accepted["ok"], f"a complete autonomous invocation was refused: {accepted}")
+
+    plain = send(rv, "object.create", {"kind": "cube", "name": "Permissive"})
+    expect(plain["ok"], "the strict contract leaked into ordinary delivery")
+
+
+def side_effecting_is_not_the_same_claim_as_mutating(rv: Host) -> None:
+    """Transaction control changes nothing authored and is still not free to repeat."""
+    declared = {tool["name"]: tool for tool in rv.runtime.registry.capabilities()}
+    for name in ("transaction.begin", "transaction.commit",
+                 "transaction.adopt", "transaction.discard"):
+        spec = declared[name]
+        expect(spec["side_effecting"] is True,
+               f"{name} does not advance the revision and was treated as safe to repeat")
+        expect(spec["mutating"] is False,
+               f"{name} is not an authored-state mutation and should not claim to be")
+    expect(declared["transaction.rollback"]["mutating"] is True,
+           "rollback moves authored state")
+    expect(declared["object.create"]["side_effecting"] is True,
+           "a mutating tool is side-effecting by definition")
+    expect(declared["scene.describe"]["side_effecting"] is False,
+           "a read was marked side-effecting")
+
+
 SCENARIOS = (
     a_lost_reply_does_not_create_twice,
     a_lost_reply_does_not_report_a_delete_as_failed,
@@ -320,6 +483,12 @@ SCENARIOS = (
     determinism_metadata_cannot_be_omitted,
     the_ledger_records_intent_before_the_side_effect,
     a_resumed_ledger_replays_a_terminal_record,
+    a_proved_non_application_survives_a_resume,
+    a_failed_recovery_does_not_leave_the_key_reserved,
+    one_key_means_one_side_effect_regardless_of_transaction,
+    a_replay_reports_the_original_execution_separately,
+    the_autonomous_contract_requires_what_an_unattended_loop_needs,
+    side_effecting_is_not_the_same_claim_as_mutating,
 )
 
 

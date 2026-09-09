@@ -74,6 +74,11 @@ class ToolSpec:
     # texture" impossible to ask for.
     seeds: tuple[str, ...] = ()
     determinism: str = EXACT
+    # Repeated delivery of this operation is not free, whether or not it moves
+    # the authored scene. Mutations are the obvious case; transaction control,
+    # and later artifact export and external generation, are the ones that would
+    # be missed by asking only "does the revision advance?".
+    side_effecting: bool = False
 
     def describe(self, *, include_schema: bool = False) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -84,6 +89,7 @@ class ToolSpec:
             "reads": self.reads,
             "determinism": self.determinism,
             "seeds": list(self.seeds),
+            "side_effecting": self.side_effecting,
             "stability": self.stability,
             "summary": self.summary,
             "tags": list(self.tags),
@@ -116,6 +122,7 @@ class ToolRegistry:
         params_schema: dict[str, Any] | None = None,
         seeds: Iterable[str] | None = None,
         determinism: str = EXACT,
+        side_effecting: bool | None = None,
     ) -> None:
         if name in self._tools:
             raise RuntimeError(f"duplicate RoboVision tool: {name}")
@@ -123,6 +130,10 @@ class ToolRegistry:
             raise RuntimeError(f"{name}: reads must be one of {READ_CONSISTENCY}")
         if mutating and reads != AUTHORITATIVE:
             raise RuntimeError(f"{name}: a mutating tool re-reads before it runs; it cannot be {reads}")
+        # A mutating tool is side-effecting by definition; anything else has to
+        # say so, because "does not advance the scene revision" is not the same
+        # claim as "safe to execute twice".
+        resolved_side_effecting = mutating if side_effecting is None else bool(side_effecting)
         resolved_seeds = tuple(str(channel) for channel in (seeds or ()))
         if determinism not in DETERMINISM:
             raise RuntimeError(f"{name}: determinism must be one of {DETERMINISM}")
@@ -152,6 +163,7 @@ class ToolRegistry:
             resolved_schema,
             resolved_seeds,
             determinism,
+            resolved_side_effecting,
         )
 
     def get(self, name: str) -> ToolSpec:

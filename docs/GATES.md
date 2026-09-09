@@ -179,6 +179,18 @@ channels, seeds on a tool claiming exactness, and an undeclared determinism
 class. The ledger is asserted to write `OP_INTENT` before the side effect and
 `OP_RESULT` after it, with the coordinate frame recorded on every intent.
 
+Six more scenarios close what reviewing the implementation found. A failed
+operation whose recovery proved nothing applied is recorded `proved_not_applied`
+rather than deleted, and a bridge rebuilt from the ledger reaches the same
+conclusion instead of replaying a response that was never produced. A generic
+handler failure whose own recovery fails no longer leaves its key reserved for
+the life of the bridge. One key means one side effect whatever transaction it
+ran in. A replay reports `original_execution` separately, so a client cannot read
+the current revision as the one the operation ran at. The autonomous contract
+refuses an authored mutation missing its world, revision, key, attempt or seeds.
+And transaction control is asserted side-effecting while not mutating, so
+"does not advance the revision" cannot be read as "safe to repeat".
+
 Not yet covered: two real clients racing one key over TCP, and a bridge reload
 that resumes a verified world — the Blender runtime never resumes one, so its
 ledger resume path is exercised directly and the real reload belongs to Unity.

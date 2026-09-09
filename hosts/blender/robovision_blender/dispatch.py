@@ -15,6 +15,7 @@ import bpy
 
 from . import undo
 from .protocol import AUTHORED, HOST_VERSION, PROTOCOL_VERSION
+from .idempotency import PROVED_NOT_APPLIED
 from .recipe import CANONICAL_FRAME, recipe_hash
 from .registry import AUTHORITATIVE, EXACT, NOTIFIED, UNKNOWN, HostError
 
@@ -135,7 +136,7 @@ def _close_failed(runtime, intent, key, exc, recovery) -> None:
     try:
         runtime.ledger.result(
             int(intent["sequence"]),
-            outcome="rejected" if recovered else "indeterminate",
+            outcome=PROVED_NOT_APPLIED if recovered else "indeterminate",
             error_code=code,
             recovered=recovered,
             post_revision=runtime.revision,
@@ -147,9 +148,45 @@ def _close_failed(runtime, intent, key, exc, recovery) -> None:
     if key is None:
         return
     if recovered:
-        runtime.invocations.forget(key)
+        runtime.invocations.prove_not_applied(key)
     else:
         runtime.invocations.release(key)
+
+
+AUTONOMOUS = "autonomous"
+
+
+def _assert_autonomous_contract(spec, raw: dict[str, Any], params: dict[str, Any],
+                                if_revision: int | None) -> None:
+    """What an unattended loop must supply before it is allowed to author anything.
+
+    Low-level delivery stays permissive so an operator at a console can still
+    poke the host, but an agent driving it for hours cannot be trusted to have
+    remembered any of this by convention. The world matters most: a *first*
+    delivery planned against world A must not execute in world B merely because
+    it is technically not a retry, and nothing but an explicit expected world
+    catches that.
+    """
+    if raw.get("contract") != AUTONOMOUS or not spec.mutating:
+        return
+    missing = []
+    if not isinstance(raw.get("expected_world"), str) or not raw.get("expected_world"):
+        missing.append("expected_world")
+    if if_revision is None:
+        missing.append("if_revision")
+    if not isinstance(raw.get("idempotency_key"), str) or not raw.get("idempotency_key"):
+        missing.append("idempotency_key")
+    attempt = raw.get("attempt")
+    if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
+        missing.append("attempt")
+    missing.extend(channel for channel in spec.seeds if params.get(channel) is None)
+    if missing:
+        raise HostError(
+            "CONTRACT_VIOLATION",
+            f"{spec.name} was invoked under the autonomous contract without: "
+            f"{', '.join(missing)}",
+            data={"contract": AUTONOMOUS, "missing": missing, "method": spec.name},
+        )
 
 
 def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
@@ -181,6 +218,8 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
                       "current_world_incarnation": runtime.world_incarnation},
                 retryable=True,
             )
+
+        _assert_autonomous_contract(spec, raw, params, if_revision)
 
         # Randomness and identity are settled before any side effect, so a lost
         # reply leaves a client able to describe exactly what it asked for.
@@ -297,7 +336,21 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
                 response={"result": result, "outcome": outcome},
             )
             if key is not None:
-                runtime.invocations.complete(key, {"result": result, "outcome": outcome})
+                runtime.invocations.complete(
+                    key,
+                    {"result": result, "outcome": outcome},
+                    original={
+                        "request_id": request_id,
+                        "world_incarnation": runtime.world_incarnation,
+                        "recipe_hash": recipe,
+                        "pre_revision": intent.get("pre_revision"),
+                        "pre_fingerprint": intent.get("pre_fingerprint"),
+                        "post_revision": runtime.revision,
+                        "post_fingerprint": runtime.current_snapshot()["fingerprint"],
+                        "outcome": outcome,
+                        "transaction": intent.get("transaction"),
+                    },
+                )
         return response
 
     except HostError as exc:
@@ -313,10 +366,14 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
 
     except Exception as exc:
         recovery_error, recovery = runtime._recover_failed_operation(mutation_before, exc, request_id)
+        # Closed before either return. This path used to leave early when
+        # recovery itself failed, and the invocation stayed reserved for the life
+        # of the bridge: every later delivery of that key was answered
+        # IN_PROGRESS about an operation that had long since stopped running.
+        _close_failed(runtime, intent, key, recovery_error or exc, recovery)
         if recovery_error is not None:
             return _envelope(runtime, request_id, started, consistency=consistency,
                              ok=False, error=_error_payload(recovery_error))
-        _close_failed(runtime, intent, key, exc, recovery)
         traceback.print_exc()
         error: dict[str, Any] = {
             "code": "HOST_EXCEPTION",

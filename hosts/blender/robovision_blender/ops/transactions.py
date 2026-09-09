@@ -62,10 +62,22 @@ def discard(params, runtime):
 
 
 def register(registry) -> None:
-    registry.add("transaction.begin", begin, stability="alpha")
-    registry.add("transaction.commit", commit, stability="alpha")
+    # All of these are side-effecting although only rollback moves the scene:
+    # "does not advance the revision" is not the same claim as "safe to execute
+    # twice", and a duplicated begin, commit, adopt or discard is not free.
+    #
+    # They are deliberately not covered by idempotent replay yet. Each is already
+    # duplicate-safe through its own state machine — a second begin is
+    # TRANSACTION_ACTIVE, a second commit or rollback is TRANSACTION_FINISHED, a
+    # second adopt is refused because the transaction is no longer orphaned — and
+    # begin's response carries the recovery token, which must not be stored in a
+    # ledger or handed back by a replay to whoever redelivers the request.
+    # Replaying these needs deliberate redaction, and that is designed when
+    # something actually needs it rather than now.
+    registry.add("transaction.begin", begin, stability="alpha", side_effecting=True)
+    registry.add("transaction.commit", commit, stability="alpha", side_effecting=True)
     registry.add("transaction.rollback", rollback, mutating=True, stability="alpha")
     # Adoption must reach the host without an owner, and proves authority with a
     # token rather than with the connection it arrives on.
-    registry.add("transaction.adopt", adopt, stability="alpha")
-    registry.add("transaction.discard", discard, stability="alpha")
+    registry.add("transaction.adopt", adopt, stability="alpha", side_effecting=True)
+    registry.add("transaction.discard", discard, stability="alpha", side_effecting=True)
