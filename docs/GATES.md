@@ -195,11 +195,13 @@ stayed monotonic, and no transaction was left active. Mean cycle 13.65ms, p50
   gate.
 - **Unity 6000.0 at runtime — infrastructure-blocked.** The declared floor is
   compile-verified in CI only; every runtime result above is from 6000.6.0f1.
-  The development machine cannot host a second editor: `C:` has 0.6 GB free, an
-  installed Unity editor is 19.3 GB, and Unity Hub is not installed. That same
-  full disk is why the pagefile cannot grow, which is what exhausted the commit
-  limit during the one windowed run. Unblocking this needs disk space and a Hub
-  install, or a CI runner with a `UNITY_LICENSE` secret.
+  Unity Hub is installed at `D:\Unity Hub` and its CLI works, and 6000.0.83f1 —
+  the version CI compiles against — is available to install. Its editor install
+  path is `C:\Program Files\Unity\Hub\Editor`, and `C:` has 0.6 GB free against a
+  19.3 GB editor, so installing one needs the Hub install path repointed at `D:`
+  (197 GB free) plus a full editor download. The same full `C:` is why the
+  pagefile cannot grow, which is what exhausted the commit limit during the one
+  windowed run. A CI runner with a `UNITY_LICENSE` secret would also unblock it.
 - **Repeat volume at the suite level.** The EditMode suite runs three
   consecutive times; the soak covers 200 cycles but exercises one cycle shape
   rather than all 72 tests.
