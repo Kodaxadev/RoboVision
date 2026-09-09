@@ -37,11 +37,16 @@ class RoboVisionRuntime:
         self._registered_tools = False
         self._snapshots: dict[str, dict[str, Any]] = {}
         self._snapshot_order: deque[str] = deque()
-        # One RoboVision runtime incarnation inside this process. Loading a
-        # different document invalidates everything scoped to the previous one,
-        # and a client can tell "the world was replaced" from "the revision went
-        # backwards" only if the incarnation changes with it.
-        self.incarnation = "rvrt:" + str(uuid.uuid4())
+        self._invalidated_snapshots: dict[str, Any] = {}
+        # Two identities, deliberately separate. The bridge is this loaded
+        # RoboVision runtime: it rotates when the add-on is reloaded or the
+        # bridge restarts, and it does not care which file is open. The document
+        # incarnation is one loaded state universe: it rotates when a document is
+        # opened or replaced, while the bridge keeps running with its sockets
+        # still bound. A handle stale for one reason is not stale for the other,
+        # and one id could not report both.
+        self.bridge = "rvbridge:" + str(uuid.uuid4())
+        self.document_incarnation = "rvdoc:" + str(uuid.uuid4())
         self.document: str | None = None
 
     @property
@@ -67,6 +72,16 @@ class RoboVisionRuntime:
         the one shipped.
         """
         self.registry_ready()
+        # Only a genuine (re)attach is a new bridge incarnation. Add-on
+        # disable/enable detaches and attaches again, and a client must be able
+        # to tell that the code it was talking to has been replaced. Opening a
+        # socket on an already attached runtime is not that, so attaching twice
+        # must be idempotent. The document incarnation rotates with a real
+        # reattach because it lives in this bridge's memory, and a reattached
+        # bridge cannot know what the previous one minted.
+        if self not in _ACTIVE_RUNTIMES:
+            self.bridge = "rvbridge:" + str(uuid.uuid4())
+            self.document_incarnation = "rvdoc:" + str(uuid.uuid4())
         _ACTIVE_RUNTIMES.add(self)
         self.document = bpy.data.filepath or None
         self._dirty = True
@@ -77,6 +92,8 @@ class RoboVisionRuntime:
             bpy.app.handlers.load_pre.append(_document_closing)
         if _document_opened not in bpy.app.handlers.load_post:
             bpy.app.handlers.load_post.append(_document_opened)
+        if _document_saved not in bpy.app.handlers.save_post:
+            bpy.app.handlers.save_post.append(_document_saved)
 
     def document_closing(self) -> None:
         """A different document is about to replace this one.
@@ -89,11 +106,27 @@ class RoboVisionRuntime:
         """
         self.transactions.abandon(reason="document_changed")
 
+    def document_saved(self) -> None:
+        """A save can change which file this document is, without loading one.
+
+        Save As writes to a new path and the in-memory document becomes that
+        file. Nothing is loaded, so the document incarnation is untouched, but a
+        host that only learned its path at load time would keep reporting the
+        previous file — or, before the first save, no file at all.
+        """
+        self.document = bpy.data.filepath or None
+
     def document_opened(self) -> None:
         forget_identity_owners()
+        # Remember what was dropped so a client holding one of these handles is
+        # told the world changed, rather than that its snapshot never existed.
+        self._invalidated_snapshots.update(self._snapshots)
+        while len(self._invalidated_snapshots) > 256:
+            self._invalidated_snapshots.pop(next(iter(self._invalidated_snapshots)))
         self._snapshots.clear()
         self._snapshot_order.clear()
-        self.incarnation = "rvrt:" + str(uuid.uuid4())
+        # The bridge is untouched by a file load: same code, same sockets.
+        self.document_incarnation = "rvdoc:" + str(uuid.uuid4())
         self.document = bpy.data.filepath or None
         self.revision = 0
         self._last_fingerprint = None
@@ -216,6 +249,13 @@ class RoboVisionRuntime:
         try:
             return self._snapshots[snapshot_id]
         except KeyError as exc:
+            if snapshot_id in self._invalidated_snapshots:
+                raise HostError(
+                    "STALE_DOCUMENT",
+                    "the snapshot was taken in a document incarnation that is no longer loaded",
+                    data={"snapshot": snapshot_id, "document_incarnation": self.document_incarnation},
+                    retryable=True,
+                ) from exc
             raise HostError("NOT_FOUND", f"snapshot not found: {snapshot_id}") from exc
 
     def dispatch(self, raw: dict[str, Any]) -> dict[str, Any]:
@@ -353,3 +393,9 @@ def _document_closing(_file=None, _other=None) -> None:
 def _document_opened(_file=None, _other=None) -> None:
     for runtime in tuple(_ACTIVE_RUNTIMES):
         runtime.document_opened()
+
+
+@persistent
+def _document_saved(_file=None, _other=None) -> None:
+    for runtime in tuple(_ACTIVE_RUNTIMES):
+        runtime.document_saved()

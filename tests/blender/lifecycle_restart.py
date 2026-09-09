@@ -70,7 +70,8 @@ def phase_one() -> None:
                 "objects": {"RestartAlpha": alpha, "RestartBeta": beta},
                 "mesh_revision": mesh_revision,
                 "fingerprint": rv.fingerprint(),
-                "runtime": described["runtime"],
+                "bridge": described["bridge"],
+                "document_incarnation": described["document_incarnation"],
                 "revision": described["revision"],
                 "port": port,
                 "listening": rv.runtime.running,
@@ -106,8 +107,12 @@ def phase_two() -> None:
 
     # 2. Runtime-scoped state must not appear to have survived.
     expect(
-        described["runtime"] != state["runtime"],
-        "a new process reported the previous runtime incarnation",
+        described["bridge"] != state["bridge"],
+        "a new process reported the previous bridge identity",
+    )
+    expect(
+        described["document_incarnation"] != state["document_incarnation"],
+        "a new process reported the previous document incarnation",
     )
     expect(described["revision"] == 0, f"the revision must reset in a new process, got {described['revision']}")
     expect(
@@ -131,7 +136,7 @@ def phase_two() -> None:
         "    described = c.call('scene.describe')\n"
         "    print('RESULT ' + json.dumps({\n"
         "        'editor': hello['result']['editor']['name'],\n"
-        "        'runtime': hello['result']['runtime'],\n"
+        "        'bridge': hello['result']['bridge'],\n"
         "        'objects': sorted(o['name'] for o in described['result']['objects']),\n"
         "    }))\n",
         encoding="utf-8",
@@ -155,7 +160,7 @@ def phase_two() -> None:
     payload = json.loads(stdout[marker + len("RESULT ") :].strip())
 
     expect(payload["editor"] == "Blender", f"unexpected editor over the wire: {payload}")
-    expect(payload["runtime"] == described["runtime"], "the client saw a different runtime incarnation")
+    expect(payload["bridge"] == described["bridge"], "the client saw a different bridge identity")
     expect(payload["objects"] == ["RestartAlpha", "RestartBeta"], f"the client saw {payload['objects']}")
     script.unlink(missing_ok=True)
 

@@ -65,6 +65,24 @@ class TransactionManager:
             },
         )
 
+    @staticmethod
+    def _assert_undo_is_functional() -> None:
+        """Refuse to claim a rollback the undo stack cannot deliver.
+
+        In background Blender `ed.undo_push` and `ed.undo` both poll true and
+        the operators report FINISHED, but nothing is restored. A transaction
+        then looks healthy right up until it has to roll something back, and the
+        generic ROLLBACK_INCOMPLETE that follows reads like corruption rather
+        than like an unsupported configuration.
+        """
+        if bpy.app.background:
+            raise HostError(
+                "UNDO_UNAVAILABLE",
+                "Blender's undo stack does not restore state in background mode, "
+                "so a verified rollback cannot be performed",
+                data={"background": True, "remedy": "run an interactive Blender for verified transactions"},
+            )
+
     @classmethod
     def _seal_current_state(cls, message: str) -> bool:
         """Make un-pushed changes an undo step so the next undo lands on target.
@@ -108,6 +126,8 @@ class TransactionManager:
             "label": label,
             "begin_fingerprint": before["fingerprint"],
             "contaminated": False,
+            # Stated up front rather than discovered at rollback time.
+            "verified_rollback": not bpy.app.background,
         }
 
     def mark_external_change(self, fingerprint: str) -> None:
@@ -133,6 +153,7 @@ class TransactionManager:
             # The operation failed its preconditions without touching state.
             return {"recovered": True, "undo_steps": 0, "fingerprint": target}
 
+        self._assert_undo_is_functional()
         self._assert_undo_is_safe("recover")
         sealed = self._seal_current_state("RoboVision RECOVER")
         for step in range(1, max_steps + 1):
@@ -176,6 +197,9 @@ class TransactionManager:
         target = tx.begin_snapshot["fingerprint"]
         current = scene_snapshot(level=DEEP)
         if current["fingerprint"] != target:
+            # Only when there is actually something to undo: a no-op rollback is
+            # honest even where undo cannot restore.
+            self._assert_undo_is_functional()
             self._assert_undo_is_safe("roll back")
         if current["fingerprint"] == target:
             self.active = None

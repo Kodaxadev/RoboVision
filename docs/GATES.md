@@ -92,8 +92,17 @@ fingerprint, reports a different runtime incarnation, resets the revision, holds
 no transaction, rebinds the port, and is driven by the shipped Python
 `RoboVisionClient`.
 
-Not yet proven for Blender: add-on disable/enable and re-registration, and
-undo/redo interleaved with a save.
+The gauntlet also covers unsaved-to-saved, Save As, three consecutive reopens of
+one document, an A to B to A round trip, a snapshot handle from a closed document
+incarnation failing with `STALE_DOCUMENT`, and reattaching the bridge — which is
+what add-on disable and enable does to the runtime — minting a new bridge and a
+new document incarnation.
+
+Not proven for Blender: undo and redo interleaved with a save. Blender's undo
+does not restore state in background mode, and this gauntlet is headless, so the
+claim is not made here. The host now refuses rather than pretending: a rollback
+that would actually need to undo something returns `UNDO_UNAVAILABLE` in
+background, and `transaction.begin` reports `verified_rollback: false` there.
 
 ### Not yet proven at Gate 1
 

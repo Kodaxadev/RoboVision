@@ -309,7 +309,7 @@ resolve.
 | reopen same document | keep | keep | keep | keep | **new** | reset | keep | keep | invalidate | abandon | reset | drop | drop |
 | load a different document | keep | keep (that file's own) | keep | keep | **new** | reset | durable only | that file's own | invalidate | abandon | reset | drop | drop |
 | add-on disable/enable or reload | keep | keep | keep | **new** | **new** | reset | keep | keep | invalidate | drop | reset | drop | drop |
-| Unity domain / assembly reload | keep | keep | keep | **new** | keep | reset | keep | keep | invalidate | orphan, then adopt (§4.1) | reset | drop | drop |
+| Unity domain / assembly reload | keep | keep | keep | **new** | **new** | reset | keep | keep | invalidate | orphan, then adopt (§4.1) | reset | drop | drop |
 | editor process restart | keep | keep | **new** | **new** | **new** | reset | durable only | keep | invalidate | drop | reset | drop | drop |
 
 Two rows deserve their reasoning.
@@ -319,9 +319,15 @@ bridge: the same code is running, its sockets are still bound, and its module
 state survived. Everything scoped to the loaded world is void; everything scoped
 to the code is not.
 
-**Unity domain reload** is the mirror image: the bridge is rebuilt while the open
-scene is untouched, so the document incarnation is kept. A transaction is
-orphaned rather than dropped because the scene it describes is still there.
+**A bridge reload rotates the document incarnation too**, in both editors. The
+open file is untouched, so it is tempting to keep it — but the document
+incarnation lives in the bridge's own memory, and a rebuilt bridge has no way to
+learn what the previous one had minted. Claiming continuity it cannot establish
+would be exactly the kind of false evidence the rest of this document exists to
+prevent. A client must therefore treat a bridge rotation as invalidating
+document-scoped handles as well. Unity's domain reload keeps the transaction —
+orphaned, then adopted per §4.1 — because the scene it describes is still there,
+which is the one thing that does survive.
 
 Evidence today. Blender: save, reopen, load-other and process restart are
 asserted by `tests/blender/lifecycle_document.py` and
