@@ -104,7 +104,7 @@ per assembly.
 
 ### What a live Editor has proven
 
-66 tests, 62 passing, 4 skipped, exit 0, across three consecutive runs on
+72 tests, 68 passing, 4 skipped, exit 0, across three consecutive runs on
 **Unity 6000.6.0f1** (Windows):
 
 - the package is compiled and loaded by Unity, is reported by
@@ -210,8 +210,8 @@ stayed monotonic, and no transaction was left active. Mean cycle 13.65ms, p50
 
 | reference | issued for | survives domain reload | survives editor restart |
 | --- | --- | --- | --- |
-| `unity:GlobalObjectId_*` | objects in a saved scene or asset | yes, asserted | expected; not yet asserted |
-| `unity:session:<n>` | unsaved scene objects with no persistent id | no, asserted to fail `NOT_FOUND` | no |
+| `unity:GlobalObjectId_*` | objects in a saved scene or asset | yes, asserted | yes, asserted by the restart gate |
+| `unity:session:<n>` | unsaved scene objects with no persistent id | no, asserted to fail `NOT_FOUND` | no, asserted to fail `NOT_FOUND` |
 
 `object.inspect` reports `identity_persistent` so a client never has to infer
 which kind it holds.

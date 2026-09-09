@@ -192,8 +192,12 @@ namespace Kodaxa.RoboVision.Editor.Tests
                     "the new process could not bind the port the old one used");
 
                 // 7. The shipped Python client must be able to reconnect.
-                findings["python_client"] = PythonReconnect(package, port, out var pythonDetail);
-                Check("python_client_reconnects", findings.Value<bool>("python_client"), pythonDetail);
+                // Recorded once: reporting the same fact as both a finding and a
+                // check made the harness print eight PASS lines for seven
+                // checks, and an inflated count is exactly the kind of evidence
+                // drift this gate exists to prevent.
+                var pythonReconnected = PythonReconnect(package, port, out var pythonDetail);
+                Check("python_client_reconnects", pythonReconnected, pythonDetail);
 
                 RoboVisionHost.Instance.Stop();
                 findings["phase2"] = failures.Count == 0 ? "ok" : "failed";
