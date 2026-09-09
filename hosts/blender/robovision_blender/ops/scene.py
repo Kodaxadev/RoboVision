@@ -14,6 +14,8 @@ def describe(params, runtime):
     return {
         "scene": bpy.context.scene.name_full,
         "revision": runtime.revision,
+        "runtime": runtime.incarnation,
+        "document": runtime.document,
         "frame": int(bpy.context.scene.frame_current),
         "level": level,
         "objects": [

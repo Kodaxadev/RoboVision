@@ -85,6 +85,13 @@ jobs:
             --python-exit-code 1 \
             --python tests/blender/gate0_transport.py
 
+      - name: Run RoboVision document lifecycle gauntlet
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-lifecycle
+          "${BLENDER_DIR}/blender"             --background             --factory-startup             --python-exit-code 1             --python tests/blender/lifecycle_document.py
+
       - name: Run RoboVision Gate 1 in interactive Blender
         shell: bash
         run: |

@@ -9,6 +9,7 @@ from typing import Any
 import bpy
 from bpy.app.handlers import persistent
 
+from .identity import forget_identity_owners
 from .registry import HostError, ToolRegistry
 from .snapshots import DEEP, scene_snapshot
 from .transactions import TransactionManager
@@ -36,6 +37,12 @@ class RoboVisionRuntime:
         self._registered_tools = False
         self._snapshots: dict[str, dict[str, Any]] = {}
         self._snapshot_order: deque[str] = deque()
+        # One RoboVision runtime incarnation inside this process. Loading a
+        # different document invalidates everything scoped to the previous one,
+        # and a client can tell "the world was replaced" from "the revision went
+        # backwards" only if the incarnation changes with it.
+        self.incarnation = "rvrt:" + str(uuid.uuid4())
+        self.document: str | None = None
 
     @property
     def running(self) -> bool:
@@ -61,10 +68,38 @@ class RoboVisionRuntime:
         """
         self.registry_ready()
         _ACTIVE_RUNTIMES.add(self)
+        self.document = bpy.data.filepath or None
         self._dirty = True
         self._refresh_dirty_state()
         if _depsgraph_dirty not in bpy.app.handlers.depsgraph_update_post:
             bpy.app.handlers.depsgraph_update_post.append(_depsgraph_dirty)
+        if _document_closing not in bpy.app.handlers.load_pre:
+            bpy.app.handlers.load_pre.append(_document_closing)
+        if _document_opened not in bpy.app.handlers.load_post:
+            bpy.app.handlers.load_post.append(_document_opened)
+
+    def document_closing(self) -> None:
+        """A different document is about to replace this one.
+
+        Everything scoped to the open document dies here rather than surviving
+        into a file it does not describe. A transaction is the dangerous case:
+        its begin fingerprint describes a document that will not exist, so
+        leaving it active made rollback report TRANSACTION_CONTAMINATED, which
+        blames a human edit for a whole-document change.
+        """
+        self.transactions.abandon(reason="document_changed")
+
+    def document_opened(self) -> None:
+        forget_identity_owners()
+        self._snapshots.clear()
+        self._snapshot_order.clear()
+        self.incarnation = "rvrt:" + str(uuid.uuid4())
+        self.document = bpy.data.filepath or None
+        self.revision = 0
+        self._last_fingerprint = None
+        self._last_snapshot = None
+        self._dirty = True
+        self._refresh_dirty_state()
 
     def remove_handlers(self) -> None:
         _ACTIVE_RUNTIMES.discard(self)
@@ -306,3 +341,15 @@ RUNTIME = RoboVisionRuntime()
 def _depsgraph_dirty(_scene=None, _depsgraph=None) -> None:
     for runtime in tuple(_ACTIVE_RUNTIMES):
         runtime.mark_dirty()
+
+
+@persistent
+def _document_closing(_file=None, _other=None) -> None:
+    for runtime in tuple(_ACTIVE_RUNTIMES):
+        runtime.document_closing()
+
+
+@persistent
+def _document_opened(_file=None, _other=None) -> None:
+    for runtime in tuple(_ACTIVE_RUNTIMES):
+        runtime.document_opened()

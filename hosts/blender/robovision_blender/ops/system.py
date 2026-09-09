@@ -52,6 +52,8 @@ def hello(_params, runtime):
             "background": bool(bpy.app.background),
         },
         "revision": runtime.revision,
+        "runtime": runtime.incarnation,
+        "document": runtime.document,
         "capability_count": len(live_capabilities),
         "capabilities": live_capabilities,
         "discovery": {

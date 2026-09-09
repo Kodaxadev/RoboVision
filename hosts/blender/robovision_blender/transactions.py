@@ -20,6 +20,28 @@ class Transaction:
 class TransactionManager:
     def __init__(self) -> None:
         self.active: Transaction | None = None
+        # Transactions that were killed by a lifecycle event rather than
+        # finished. Remembering the id lets a later commit or rollback say what
+        # actually happened instead of "no transaction is active", which reads
+        # like the client invented the id.
+        self.abandoned: dict[str, str] = {}
+
+    def abandon(self, *, reason: str) -> str | None:
+        """Drop the active transaction because the world it described is gone.
+
+        Rolling back is not an option: the begin fingerprint describes a
+        document that is no longer open, so undo would either fail or operate on
+        unrelated state. The honest outcome is to end the transaction and say
+        why.
+        """
+        tx = self.active
+        if tx is None:
+            return None
+        self.active = None
+        self.abandoned[tx.id] = reason
+        while len(self.abandoned) > 32:
+            self.abandoned.pop(next(iter(self.abandoned)))
+        return tx.id
 
     @staticmethod
     def _assert_undo_is_safe(action: str) -> None:
@@ -211,6 +233,19 @@ class TransactionManager:
 
     def _require(self, tx_id: str) -> Transaction:
         if self.active is None:
+            reason = self.abandoned.get(tx_id)
+            if reason == "document_changed":
+                raise HostError(
+                    "DOCUMENT_CHANGED",
+                    "the transaction was abandoned because a different document was loaded",
+                    data={"transaction": tx_id, "reason": reason},
+                )
+            if reason is not None:
+                raise HostError(
+                    "TRANSACTION_ABANDONED",
+                    f"the transaction was abandoned: {reason}",
+                    data={"transaction": tx_id, "reason": reason},
+                )
             raise HostError("NO_TRANSACTION", "no transaction is active")
         if tx_id != self.active.id:
             raise HostError("INVALID_PARAMS", "transaction id does not match active transaction", data={"active": self.active.id})
