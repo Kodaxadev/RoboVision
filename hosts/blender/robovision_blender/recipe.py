@@ -62,6 +62,29 @@ def environment() -> dict[str, Any]:
     }
 
 
+def coordinate_contract() -> str:
+    """An identity for the axis and unit convention a world is being edited in.
+
+    The unit analogue of the active-scene bug. `scale_length` is a scene
+    property: a human can change what a unit *means* between an agent's
+    observation and its mutation, and neither the world incarnation nor the
+    authored scene revision moves when they do. An agent that pinned only those
+    two would carry on measuring in a different currency without noticing.
+
+    So the convention gets an identity of its own, which a request can pin the
+    way it pins a world. Derived rather than declared, from the things that would
+    change the meaning of a coordinate.
+    """
+    body = canonical({
+        "frame": CANONICAL_FRAME,
+        "handedness": "right",
+        "up": "+Z",
+        "forward": "-Y",
+        **units(),
+    })
+    return "rvcoord:" + hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+
+
 def units() -> dict[str, Any]:
     """What one unit of this scene actually is.
 

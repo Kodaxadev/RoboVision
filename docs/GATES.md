@@ -195,6 +195,29 @@ Not yet covered: two real clients racing one key over TCP, and a bridge reload
 that resumes a verified world — the Blender runtime never resumes one, so its
 ledger resume path is exercised directly and the real reload belongs to Unity.
 
+### The Astra-facing path
+
+`tests/blender/mcp_session.py` (headless) drives the real `mcp_server._call`,
+because the host's guarantees are only worth what the public path can use.
+Measured before it existed: `transaction.begin` succeeded and by the next MCP
+tool call the transaction was already orphaned — the connection that opened it
+closed as that call returned — so the mutation and the rollback were both refused
+`TRANSACTION_ORPHANED`. Transactions were unusable for the Artist Loop.
+
+One session per host now, serialized, reconnected deliberately. The gate proves a
+transaction survives begin, three mutations and a read as separate MCP calls;
+that a dead socket orphans it and the reconnected session is treated as a
+stranger rather than the old owner until it adopts; that the precommitted
+recovery secret adopts it and rotates to the next precommitted one, with no
+secret in either reply; and that the strict autonomous contract is reachable from
+`rv_call`, with a retry replaying rather than creating a second object.
+
+Not covered headless: rollback actually restoring the begin fingerprint through
+the MCP path. Background Blender cannot verify a rollback at all — its own gate
+asserts that — so the rollback here proves the ownership boundary instead, by
+failing `UNDO_UNAVAILABLE` rather than `TRANSACTION_ORPHANED`. The restoration
+claim belongs to an interactive run.
+
 ### Transaction ownership
 
 `tests/blender/transaction_ownership.py` (headless) is the first Blender gate

@@ -118,6 +118,17 @@ jobs:
             --python-exit-code 1 \
             --python tests/blender/transaction_ownership.py
 
+      - name: Run RoboVision MCP session gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-mcp-session
+          "${BLENDER_DIR}/blender" \
+            --background \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/mcp_session.py
+
       - name: Run RoboVision idempotency gate
         shell: bash
         run: |

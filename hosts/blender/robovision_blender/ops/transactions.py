@@ -23,6 +23,7 @@ def begin(params, runtime):
         revision=runtime.revision,
         owner_client=runtime.current_client_id,
         before=runtime.current_snapshot(),
+        recovery_verifier=params.get("recovery_verifier"),
     )
 
 
@@ -52,6 +53,7 @@ def adopt(params, runtime):
         params.get("transaction"),
         params.get("recovery_token"),
         client_id=runtime.current_client_id,
+        next_verifier=params.get("next_recovery_verifier"),
     )
 
 
@@ -74,10 +76,15 @@ def register(registry) -> None:
     # ledger or handed back by a replay to whoever redelivers the request.
     # Replaying these needs deliberate redaction, and that is designed when
     # something actually needs it rather than now.
-    registry.add("transaction.begin", begin, stability="alpha", side_effecting=True)
-    registry.add("transaction.commit", commit, stability="alpha", side_effecting=True)
-    registry.add("transaction.rollback", rollback, mutating=True, stability="alpha")
+    registry.add("transaction.begin", begin, stability="alpha", side_effecting=True,
+                 duplicate_policy="terminal_state")
+    registry.add("transaction.commit", commit, stability="alpha", side_effecting=True,
+                 duplicate_policy="terminal_state")
+    registry.add("transaction.rollback", rollback, mutating=True, stability="alpha",
+                 duplicate_policy="terminal_state")
     # Adoption must reach the host without an owner, and proves authority with a
     # token rather than with the connection it arrives on.
-    registry.add("transaction.adopt", adopt, stability="alpha", side_effecting=True)
-    registry.add("transaction.discard", discard, stability="alpha", side_effecting=True)
+    registry.add("transaction.adopt", adopt, stability="alpha", side_effecting=True,
+                 duplicate_policy="terminal_state")
+    registry.add("transaction.discard", discard, stability="alpha", side_effecting=True,
+                 duplicate_policy="terminal_state")

@@ -75,91 +75,14 @@ guessing, which is the failure mode the revision scoping exists to prevent.
 
 ## 4. Transactions are RoboVision's, not native undo's
 
-Native undo is a human convenience and a useful mechanism, but it must not be the
-whole semantic definition. A transaction tracks what it owns: objects created and
-deleted, hierarchy changes, mesh datablocks touched, transforms, modifiers,
-materials and nodes, components and properties, prefab changes, generated assets,
-the revisions it started from, and the pre-state needed to restore.
+Moved to [TRANSACTIONS.md](TRANSACTIONS.md), with §4.1 ownership, adoption and
+the precommitted recovery credential, the lifecycle states and their reasons, and
+why contamination is a separate question from authority.
 
-The guarantee is: begin, mutate many entities, validate, detect a defect, roll
-back, and **prove** the authoritative state was restored — proof by fingerprint
-comparison, not by trusting that undo did the right thing.
-
-### 4.1 Ownership and adoption
-
-**Implemented on both hosts.** A transaction belongs to the connection that
-opened it. Mutations from other connections are refused with
-`TRANSACTION_FOREIGN`; reads stay open.
-
-What this replaced was too weak: any client could finish an orphan once the
-owner's socket dropped, which treats a dropped TCP connection as authorization to
-commit or destroy someone else's half-written edit. `transaction.begin` now
-returns a `recovery_token` — 32 bytes of cryptographic randomness, handed out
-exactly once, stored only as a salted SHA-256 verifier and compared in constant
-time. It appears in no diagnostic: not in `system.hello`, not in transaction
-state, not in journal events.
-
-```text
-transaction.adopt(transaction, recovery_token)
-    -> ownership + a rotated token | TRANSACTION_ADOPTION_REFUSED
-transaction.discard(transaction)
-    -> abandoned, for a transaction no outcome can honestly be claimed for
-```
-
-Adoption rotates the token, so a leaked one cannot be replayed, and the
-replacement goes only to the client that just proved itself. Every refusal is
-side-effect free — owner, state, verifier, scene, revision and journal all
-unchanged — because an adoption attempt that changes something is a way to
-attack a transaction without passing its check.
-
-Identity is host-issued and world-scoped, `rvtx:<world>:<random>`. A
-client-supplied string is a correlation label and never the lifecycle identity:
-trusting a caller-chosen id would let one client name another's transaction.
-
-**Lifecycle is an explicit state with a reason**, because "active or not" could
-not express what the measured cases actually are:
-
-| state | means | reached by |
-| --- | --- | --- |
-| `active` | owned by a live connection | `transaction.begin`, successful adoption |
-| `orphaned` | the owner is gone; only its token can reclaim it | owner disconnect, verified bridge reload |
-| `abandoned` | ended without an outcome, with a reason | world replaced, document changed, bridge reloaded, discarded |
-| `committed` / `rolled_back` | finished | `transaction.commit` / `transaction.rollback` |
-| `recovery_uncertain` | interrupted, and its checkpoint can no longer be reproduced | bridge reload with a session-scoped checkpoint |
-
-Reasons are named, not free text: `owner_disconnected`, `world_replaced`,
-`document_changed`, `bridge_reloaded`, `checkpoint_identities_lost`,
-`discarded_by_client`. `system.hello` reports the state, the world, the owner,
-whether adoption is required and whether a verified rollback is available —
-which is what health will consume rather than reinterpreting internals.
-
-**Contamination is not ownership,** and the two are answered in that order.
-Ownership says who is authorised to act; contamination says whether acting can
-still claim what it will affect. A correctly adopted owner can still be refused
-for contamination, `force` is the authorised owner accepting a risk rather than
-a privilege, and an unauthorised client never reaches the point where it would
-mean anything.
-
-**Supervisor adoption is deliberately unavailable.** The architecture describes a
-supervisor client with elevated recovery authority, and it stays a described
-capability until there is a real authentication layer to hang it on: the host is
-loopback transport with no capability model, so any "supervisor token" invented
-now would be an unauthenticated magic string wearing the word authorization. The
-hook is the same `transaction.adopt` verb — a supervisor presents a credential
-the capability layer issues, rather than the token minted at begin — and until
-that layer exists there is no way to adopt without the owner's token. A missing
-elevated feature is better than an unauthenticated one.
-
-- the owner reconnecting with its recovery token adopts its own transaction
-- a supervisor client holding the recovery capability may adopt
-- any other client may **inspect** an orphan and see it reported in health and
-  in `system.hello`, but gains no authority over it
-- forced recovery remains available and is audited as an elevated operation
-
-**Owed tests.** Owner disconnect; owner reconnect and adopt; adoption by a
-supervisor; refusal of an unauthorized adopter; domain reload with a transaction
-open; process restart with a transaction open; a stale transaction id after
-either.
+The short version: a transaction belongs to the connection that opened it and to
+the world it was opened in, only its owner's secret reclaims it after a
+disconnect, and rollback proves restoration by reproducing a fingerprint rather
+than by trusting undo.
 
 ## 5. Optimistic concurrency covers humans too
 

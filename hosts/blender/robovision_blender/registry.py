@@ -44,6 +44,25 @@ SEEDED = "seeded"
 EXTERNAL_OR_UNPROVEN = "external_or_unproven"
 DETERMINISM = (EXACT, SEEDED, EXTERNAL_OR_UNPROVEN)
 
+# How a redelivery of a side-effecting operation is resolved. Every such
+# operation must have one, decided deliberately: what must never happen is a verb
+# whose duplicate behaviour is whatever its handler happens to do. That is how
+# `object.delete` came to report NOT_FOUND for work that had succeeded.
+#
+# REPLAY          the stored result of the original execution is returned
+# TERMINAL_STATE  the operation's own state machine gives a definitive answer
+#                 about what happened, without repeating the effect
+# INDETERMINATE   the truth genuinely cannot be recovered, and the caller is
+#                 told so rather than given a guess
+#
+# The list is written for what is coming as much as for what exists: export,
+# bake, file write, asset import, external generation and long-running jobs are
+# where a duplicate execution stops being cheap.
+REPLAY = "replay"
+TERMINAL_STATE = "terminal_state"
+INDETERMINATE = "indeterminate"
+DUPLICATE_POLICIES = (REPLAY, TERMINAL_STATE, INDETERMINATE)
+
 
 class HostError(RuntimeError):
     def __init__(self, code: str, message: str, *, data: Any = None, retryable: bool = False):
@@ -79,6 +98,7 @@ class ToolSpec:
     # and later artifact export and external generation, are the ones that would
     # be missed by asking only "does the revision advance?".
     side_effecting: bool = False
+    duplicate_policy: str | None = None
 
     def describe(self, *, include_schema: bool = False) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -90,6 +110,7 @@ class ToolSpec:
             "determinism": self.determinism,
             "seeds": list(self.seeds),
             "side_effecting": self.side_effecting,
+            "duplicate_policy": self.duplicate_policy,
             "stability": self.stability,
             "summary": self.summary,
             "tags": list(self.tags),
@@ -123,6 +144,7 @@ class ToolRegistry:
         seeds: Iterable[str] | None = None,
         determinism: str = EXACT,
         side_effecting: bool | None = None,
+        duplicate_policy: str | None = None,
     ) -> None:
         if name in self._tools:
             raise RuntimeError(f"duplicate RoboVision tool: {name}")
@@ -134,6 +156,20 @@ class ToolRegistry:
         # say so, because "does not advance the scene revision" is not the same
         # claim as "safe to execute twice".
         resolved_side_effecting = mutating if side_effecting is None else bool(side_effecting)
+        resolved_policy = duplicate_policy
+        if resolved_side_effecting and resolved_policy is None:
+            # Mutations replay their stored result; anything else side-effecting
+            # has to say what it does, because the default that would otherwise
+            # apply is "whatever the handler happens to do".
+            resolved_policy = REPLAY if mutating else None
+        if resolved_side_effecting and resolved_policy is None:
+            raise RuntimeError(
+                f"{name}: a side-effecting tool must declare how a duplicate delivery is "
+                f"resolved, one of {DUPLICATE_POLICIES}")
+        if resolved_policy is not None and resolved_policy not in DUPLICATE_POLICIES:
+            raise RuntimeError(f"{name}: duplicate_policy must be one of {DUPLICATE_POLICIES}")
+        if resolved_policy is not None and not resolved_side_effecting:
+            raise RuntimeError(f"{name}: only a side-effecting tool resolves duplicates")
         resolved_seeds = tuple(str(channel) for channel in (seeds or ()))
         if determinism not in DETERMINISM:
             raise RuntimeError(f"{name}: determinism must be one of {DETERMINISM}")
@@ -164,6 +200,7 @@ class ToolRegistry:
             resolved_seeds,
             determinism,
             resolved_side_effecting,
+            resolved_policy,
         )
 
     def get(self, name: str) -> ToolSpec:

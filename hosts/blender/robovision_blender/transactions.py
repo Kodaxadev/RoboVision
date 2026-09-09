@@ -118,7 +118,8 @@ class TransactionManager:
     # ----------------------------------------------------------------- begin
 
     def begin(self, label: str, *, world: str, revision: int, owner_client: int,
-              before: dict[str, Any] | None = None) -> dict[str, Any]:
+              before: dict[str, Any] | None = None,
+              recovery_verifier: str | None = None) -> dict[str, Any]:
         if self.active is not None:
             raise HostError("TRANSACTION_ACTIVE", "a transaction is already active",
                             data={"active": self.state()})
@@ -129,7 +130,15 @@ class TransactionManager:
         if before is None or before.get("level") != DEEP:
             before = scene_snapshot(level=DEEP)
         undo.push(f"RoboVision BEGIN {label}")
-        token, secret = RecoveryToken.mint()
+        # Precommitted where the client supplied a verifier: it already holds the
+        # secret, so a lost reply cannot strand the transaction. Minted only as a
+        # fallback, and the response says which happened rather than letting the
+        # weaker path look like the safe one.
+        secret: str | None = None
+        if isinstance(recovery_verifier, str) and recovery_verifier:
+            token = RecoveryToken.precommit(recovery_verifier)
+        else:
+            token, secret = RecoveryToken.mint()
         self.active = Transaction(
             # Self-scoping: the world is in the id, so a transaction from a
             # document that is no longer loaded is recognisably not this one,
@@ -143,18 +152,24 @@ class TransactionManager:
             owner_client=owner_client,
             recovery=token,
         )
-        return {
+        response = {
             **self.state(),
             "begin_fingerprint": before["fingerprint"],
             # Stated up front rather than discovered at rollback time.
             "verified_rollback": not bpy.app.background,
-            # Returned exactly once. No call gives it back.
-            "recovery_token": secret,
-            "recovery_token_note": (
-                "Store this. It is the only way to reclaim this transaction after a disconnect, "
-                "and the host keeps only a hash of it."
-            ),
+            "recovery_precommitted": token.precommitted,
         }
+        if secret is not None:
+            # Returned exactly once, and only because the caller did not
+            # precommit. If this reply is lost the transaction cannot be
+            # reclaimed, which is why precommitting is the documented path.
+            response["recovery_token"] = secret
+            response["recovery_token_note"] = (
+                "Store this. It is the only way to reclaim this transaction after a disconnect, "
+                "and the host keeps only a hash of it. Prefer sending recovery_verifier at begin "
+                "so a lost reply cannot strand the transaction."
+            )
+        return response
 
     def mark_external_change(self, fingerprint: str) -> None:
         tx = self.active
@@ -165,7 +180,8 @@ class TransactionManager:
 
     # ----------------------------------------------------------------- adopt
 
-    def adopt(self, tx_id: str | None, offered: str | None, *, client_id: int) -> dict[str, Any]:
+    def adopt(self, tx_id: str | None, offered: str | None, *, client_id: int,
+              next_verifier: str | None = None) -> dict[str, Any]:
         """Take ownership of an orphaned transaction by proving you opened it.
 
         Every refusal leaves everything exactly as it was — owner, state,
@@ -187,13 +203,28 @@ class TransactionManager:
         tx.owner_client = client_id
         tx.state = ACTIVE
         tx.reason = None
-        tx.recovery, rotated = RecoveryToken.mint()
-        return {
+        # Rotation is what stops a leaked secret being a permanent key, and it is
+        # also where a lost reply does the most damage: the old secret is dead
+        # the moment this returns. A client that supplies the verifier for its
+        # next secret already holds the replacement, so losing this reply costs
+        # it nothing.
+        rotated: str | None = None
+        if isinstance(next_verifier, str) and next_verifier:
+            tx.recovery = RecoveryToken.precommit(next_verifier)
+        else:
+            tx.recovery, rotated = RecoveryToken.mint()
+        response = {
             **self.state(),
             "adopted": True,
-            "recovery_token": rotated,
-            "recovery_token_note": "Rotated by this adoption; the previous token no longer works.",
+            "recovery_precommitted": tx.recovery.precommitted,
         }
+        if rotated is not None:
+            response["recovery_token"] = rotated
+            response["recovery_token_note"] = (
+                "Rotated by this adoption; the previous token no longer works. Send "
+                "next_recovery_verifier with adopt so a lost reply cannot strand the transaction."
+            )
+        return response
 
     @staticmethod
     def _refused(message: str) -> HostError:

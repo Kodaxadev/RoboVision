@@ -4,6 +4,7 @@ import bpy
 
 from ..registry import INDEPENDENT, NOTIFIED, HostError
 from ..protocol import HOST_VERSION, PROTOCOL_VERSION
+from ..recipe import coordinate_contract, units
 
 
 def ping(_params, runtime):
@@ -55,6 +56,8 @@ def hello(_params, runtime):
         "bridge": runtime.bridge,
         "journal": runtime.journal.state(),
         "world_incarnation": runtime.world_incarnation,
+        "coordinate_contract": coordinate_contract(),
+        "units": units(),
         "document": runtime.document,
         # Enough to diagnose an interrupted transaction — who holds it, what
         # state it is in, whether it needs adopting and whether a verified

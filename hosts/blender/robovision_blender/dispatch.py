@@ -16,7 +16,7 @@ import bpy
 from . import undo
 from .protocol import AUTHORED, HOST_VERSION, PROTOCOL_VERSION
 from .idempotency import PROVED_NOT_APPLIED
-from .recipe import CANONICAL_FRAME, recipe_hash
+from .recipe import CANONICAL_FRAME, coordinate_contract, recipe_hash, units
 from .registry import AUTHORITATIVE, EXACT, NOTIFIED, UNKNOWN, HostError
 
 # A transaction's own bookkeeping is not a scene mutation, so it does not go
@@ -220,6 +220,21 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
             )
 
         _assert_autonomous_contract(spec, raw, params, if_revision)
+
+        # The unit and axis convention is pinned the same way the world is, and
+        # for the same reason: a human can change what a unit means between an
+        # agent's observation and its mutation without moving either the world
+        # incarnation or the scene revision.
+        expected_contract = raw.get("expected_coordinate_contract")
+        if isinstance(expected_contract, str) and expected_contract != coordinate_contract():
+            raise HostError(
+                "COORDINATE_CONTRACT_CHANGED",
+                "the unit or axis convention changed since this operation was planned",
+                data={"expected_coordinate_contract": expected_contract,
+                      "current_coordinate_contract": coordinate_contract(),
+                      "units": units()},
+                retryable=True,
+            )
 
         # Randomness and identity are settled before any side effect, so a lost
         # reply leaves a client able to describe exactly what it asked for.

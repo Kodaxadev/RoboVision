@@ -10,8 +10,8 @@ The host transport is newline-delimited UTF-8 JSON over loopback TCP by default.
 
 `if_revision` is optional for reads and strongly recommended for mutations.
 
-A mutating request may also carry `idempotency_key`, `attempt` and
-`expected_world`. Together they make a retry safe: the key names the intended
+A mutating request may also carry `idempotency_key`, `attempt`,
+`expected_world` and `expected_coordinate_contract`. Together they make a retry safe: the key names the intended
 side effect, the attempt counter tells the host this is a redelivery so it
 refuses to guess when it has no record, and the expected world stops a retry
 being reinterpreted in an editing context it was never planned against. A
@@ -99,6 +99,8 @@ state. The catalog publishes each method's class as `reads`.
 - `IN_PROGRESS`
 - `SEED_REQUIRED`
 - `CONTRACT_VIOLATION`
+- `COORDINATE_CONTRACT_CHANGED`
+- `SESSION_LOST`
 - `EPOCH_SUPERSEDED`
 - `SEQUENCE_TOO_OLD`
 - `INVALID_CONTEXT`

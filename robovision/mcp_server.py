@@ -4,11 +4,13 @@ import base64
 import io
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any, Literal
 
 from .client import RoboVisionClient
 from .errors import RoboVisionError
+from .session import HostSession
 
 HostName = Literal["blender", "unity"]
 
@@ -21,10 +23,28 @@ def _target(host: HostName) -> tuple[str, int]:
     raise ValueError(f"unsupported RoboVision host: {host}")
 
 
-def _call(host: HostName, method: str, params: dict[str, Any] | None, if_revision: int | None) -> dict[str, Any]:
+# One session per host, kept open across tool calls. A client per call orphaned
+# every transaction before the next call could use it — measured through this
+# exact path — because the connection that opened it closed as the call returned.
+_SESSIONS: dict[str, HostSession] = {}
+_SESSIONS_LOCK = threading.Lock()
+
+
+def _session(host: HostName) -> HostSession:
     address, port = _target(host)
-    with RoboVisionClient(address, port) as client:
-        return client.call(method, params or {}, if_revision=if_revision)
+    with _SESSIONS_LOCK:
+        session = _SESSIONS.get(host)
+        if session is None or (session.address, session.port) != (address, port):
+            if session is not None:
+                session.close()
+            session = HostSession(address, port)
+            _SESSIONS[host] = session
+        return session
+
+
+def _call(host: HostName, method: str, params: dict[str, Any] | None,
+          if_revision: int | None, **fields: Any) -> dict[str, Any]:
+    return _session(host).call(method, params or {}, if_revision=if_revision, **fields)
 
 
 def _model_image(path: str, max_bytes: int = 1_000_000) -> tuple[bytes, str, dict[str, Any]]:
@@ -160,8 +180,20 @@ def build_server():
         method: str,
         params: dict[str, Any] | None = None,
         if_revision: int | None = None,
+        idempotency_key: str | None = None,
+        attempt: int | None = None,
+        expected_world: str | None = None,
+        expected_coordinate_contract: str | None = None,
+        contract: str | None = None,
     ) -> dict[str, Any]:
         """Call one structured RoboVision editor operation.
+
+        For unattended work pass `contract="autonomous"` with `expected_world`,
+        `if_revision`, `idempotency_key` and `attempt`. The host then refuses the
+        call rather than executing it if any of that is missing, a retry cannot
+        be executed twice, and a request planned against one editing context
+        cannot run in another — including on a first delivery, which is not a
+        retry and is exactly as wrong in the wrong world.
 
         Use rv_status/rv_tools first to discover supported methods and rv_method
         for an exact schema when needed. For mutations, pass the most recently
@@ -170,7 +202,11 @@ def build_server():
         only artifact paths.
         """
         try:
-            return _call(host, method, params, if_revision)
+            return _call(host, method, params, if_revision,
+                         idempotency_key=idempotency_key, attempt=attempt,
+                         expected_world=expected_world,
+                         expected_coordinate_contract=expected_coordinate_contract,
+                         contract=contract)
         except Exception as exc:
             return {"ok": False, "host": host, "method": method, "error": _error_payload(exc)}
 

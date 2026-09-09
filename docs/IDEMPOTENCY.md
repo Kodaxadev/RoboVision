@@ -149,6 +149,18 @@ export operation with its own recipe and its own proof. This is what makes "the
 mesh came out rotated but the task reported success" a detectable defect rather
 than an argument about export settings.
 
+A world's convention has an identity of its own, the **coordinate contract**,
+derived from handedness, up and forward, the canonical unit, `scale_length` and
+the unit system. It is reported by `system.hello`, and a request may pin it with
+`expected_coordinate_contract`; a mismatch is `COORDINATE_CONTRACT_CHANGED`.
+
+This is the unit analogue of the active-scene bug. A human can change what a unit
+*means* between an agent's observation and its mutation, and neither the world
+incarnation nor the authored scene revision moves when they do — an agent
+pinning only those two would carry on measuring in a different currency without
+noticing. Scenes are not forced to `scale_length == 1`; the convention is
+identified, and an agent that cares says which one it planned against.
+
 The canonical frame means **one Blender unit is one RoboVision metre**,
 independent of what the unit display is set to. Blender's `scale_length` is what
 makes that a claim rather than a tautology: it says how many metres one unit
@@ -175,6 +187,27 @@ second adopt is refused because the transaction is no longer orphaned — and
 `transaction.begin`'s response carries the recovery token, which must not be
 written to a ledger or handed back by a replay to whoever redelivers the request.
 Replaying these needs deliberate redaction, designed when something needs it.
+
+### 7.6.1 Every side-effecting verb has a duplicate policy
+
+The guarantee is not "all side-effecting verbs go through the mutation
+mechanism". It is that none of them may depend on what its handler happens to
+do. Each declares one of:
+
+| policy | meaning |
+| --- | --- |
+| `replay` | the stored result of the original execution is returned |
+| `terminal_state` | the operation's own state machine gives a definitive answer without repeating the effect |
+| `indeterminate` | the truth genuinely cannot be recovered, and the caller is told so |
+
+The registry refuses a side-effecting tool that declares none. This matters most
+for what is coming — export, bake, file write, asset import, external generation,
+long-running jobs — where a duplicate execution stops being cheap.
+
+Transaction control declares `terminal_state`: a second begin is
+`TRANSACTION_ACTIVE`, a second commit or rollback `TRANSACTION_FINISHED`, a
+second adopt is refused because the transaction is no longer orphaned. That is a
+deliberate policy now rather than a description of what the code happened to do.
 
 ### 7.7 The autonomous contract
 
