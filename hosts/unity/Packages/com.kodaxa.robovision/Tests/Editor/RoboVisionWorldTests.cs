@@ -62,6 +62,20 @@ namespace Kodaxa.RoboVision.Editor.Tests
         private static string[] Types(JArray events) =>
             events.Select(e => e.Value<string>("type")).ToArray();
 
+        /// <summary>The refusal's own payload, wherever recovery reporting put it.</summary>
+        /// <remarks>
+        /// A failing mutation always gets a recovery attempt, and when one runs
+        /// the operation's own error data moves under `operation_error_data`
+        /// beside `automatic_recovery`. That happens even for a refusal that
+        /// changed nothing, so a client reading the payload has to look in both
+        /// places; both hosts shape it the same way.
+        /// </remarks>
+        private static JObject ErrorData(JObject response)
+        {
+            var data = (JObject)response["error"]["data"];
+            return (JObject)(data["operation_error_data"] ?? data);
+        }
+
         /// <summary>Unity refuses to open a scene additively while the untitled one is unsaved.</summary>
         private void SaveMain(string name)
         {
@@ -257,6 +271,129 @@ namespace Kodaxa.RoboVision.Editor.Tests
                 "precondition: the second prefab is not the one open");
             _rv.Call("scene.changes_since", new JObject { ["cursor"] = cursorA },
                 ok: false, code: "STALE_WORLD");
+        }
+
+        // ------------------------------------------------ where a mutation lands
+
+        /// <summary>
+        /// Editor-control state must not silently change what a command does.
+        /// </summary>
+        /// <remarks>
+        /// Which scene is active is not authored state and is deliberately not
+        /// hashed, so a human switching it produces no event and no revision
+        /// movement — measured: after such a switch the journal reported zero
+        /// events, and the next `object.create` landed in the other scene. A
+        /// client polling the cheap journal had no way to know it was now
+        /// authoring somewhere else.
+        ///
+        /// The fix is not to hash the active scene back into authored state,
+        /// which would make an editor-control change look like an edit. It is
+        /// for the mutation to name its target whenever there is a choice.
+        /// </remarks>
+        [Test]
+        public void ASwitchOfActiveSceneCannotSilentlyRetargetAMutation()
+        {
+            _rv.CreateObject("InA");
+            SaveMain("TargetA");
+            var a = SceneManager.GetActiveScene();
+            var b = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+            try
+            {
+                SceneManager.SetActiveScene(a);
+                _rv.Result("scene.describe");
+                var cursor = Cursor();
+
+                // A human switches the active scene; the agent is polling.
+                SceneManager.SetActiveScene(b);
+                Assert.That(EventsSince(cursor), Is.Empty,
+                    "an editor-control change was journalled as authored history");
+
+                var refused = _rv.Call("object.create", new JObject { ["name"] = "Wherever" },
+                    ok: false, code: "AMBIGUOUS_TARGET_SCENE");
+                var candidates = (JArray)ErrorData(refused)["candidates"];
+                Assert.That(candidates.Count, Is.EqualTo(2),
+                    "the refusal did not say which scenes it could have meant");
+                Assert.That(candidates.Select(c => c.Value<string>("handle")),
+                    Contains.Item(a.handle.ToString()));
+                Assert.That(candidates.Where(c => c.Value<bool>("active"))
+                        .Select(c => c.Value<string>("handle")).Single(),
+                    Is.EqualTo(b.handle.ToString()),
+                    "the refusal did not say which scene the editor currently favours");
+            }
+            finally
+            {
+                SceneManager.SetActiveScene(a);
+                EditorSceneManager.CloseScene(b, true);
+            }
+        }
+
+        [Test]
+        public void AnExplicitTargetDecidesWhereAnObjectLands()
+        {
+            _rv.CreateObject("InA");
+            SaveMain("ExplicitA");
+            var a = SceneManager.GetActiveScene();
+            var b = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+            try
+            {
+                // The editor favours B; the request names A and must win.
+                SceneManager.SetActiveScene(b);
+                var id = _rv.Result("object.create", new JObject
+                {
+                    ["name"] = "Deliberate",
+                    ["scene"] = a.handle.ToString()
+                }).Value<string>("id");
+
+                var placed = GameObject.Find("Deliberate");
+                Assert.That(placed, Is.Not.Null, "the object was not created at all");
+                Assert.That(placed.scene, Is.EqualTo(a),
+                    "the object landed in the active scene rather than the one that was named");
+
+                var reported = _rv.Result("scene.describe")["scenes"]
+                    .First(s => s.Value<string>("handle") == a.handle.ToString())["objects"]
+                    .Select(o => o.Value<string>("id"));
+                Assert.That(reported, Contains.Item(id),
+                    "the host reported the object in a different scene than it created it in");
+
+                _rv.Call("object.create", new JObject
+                {
+                    ["name"] = "Nowhere",
+                    ["scene"] = "not-a-handle"
+                }, ok: false, code: "NOT_FOUND");
+            }
+            finally
+            {
+                SceneManager.SetActiveScene(a);
+                EditorSceneManager.CloseScene(b, true);
+            }
+        }
+
+        /// <summary>Inside a Prefab Stage the preview scene is the only place to create.</summary>
+        /// <remarks>
+        /// The prefab stage's preview scene is not the active scene, so an
+        /// object created without this landed in the main stage — outside
+        /// everything the host was describing, in a world the client could not
+        /// see it in.
+        /// </remarks>
+        [Test]
+        public void CreatingInsideAPrefabStageLandsInThePrefabStage()
+        {
+            var path = SavePrefab("Target");
+            var stage = PrefabStageUtility.OpenPrefab(path);
+            var id = _rv.CreateObject("AddedInStage");
+
+            // GameObject.Find does not search a prefab stage's preview scene, so
+            // the scene has to be asked directly — which is also the assertion:
+            // the object is in the prefab, not merely somewhere in the editor.
+            var placed = stage.scene.GetRootGameObjects()
+                .FirstOrDefault(go => go.name == "AddedInStage");
+            Assert.That(placed, Is.Not.Null,
+                "the object landed outside the prefab being edited");
+            var described = _rv.Result("scene.describe");
+            Assert.That(described["scenes"].SelectMany(s => s["objects"])
+                    .Select(o => o.Value<string>("id")),
+                Contains.Item(id),
+                "the host created an object it cannot see");
         }
 
         /// <summary>A snapshot is evidence about one world, and stops applying outside it.</summary>

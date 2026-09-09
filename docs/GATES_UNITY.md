@@ -4,10 +4,13 @@ The Unity half of [GATES.md](GATES.md), split out so neither file grows past
 reading length. Gate numbering and section titles are unchanged, so existing
 references still resolve.
 
-Two blockers apply to everything below and are never quietly discharged:
-SceneView pixel correspondence needs a windowed editor, and the Unity 6000.0
-runtime floor is covered by the compile gate only. A CI `unity-editmode` job that
-reports success without a configured licence is a **skip**, not a pass.
+One blocker applies to everything below and is never quietly discharged:
+SceneView pixel correspondence needs a windowed editor. A CI `unity-editmode`
+job that reports success without a configured licence is a **skip**, not a pass,
+and is never runtime evidence.
+
+The Unity 6000.0 floor is no longer among them. It is executed now, not merely
+compiled — see *Runtime floor* below.
 
 ### Unity reconciliation
 
@@ -125,8 +128,10 @@ per assembly.
 
 ### What a live Editor has proven
 
-72 tests, 68 passing, 4 skipped, exit 0, across three consecutive runs on
-**Unity 6000.6.0f1** (Windows):
+At the C2 checkpoint: 72 tests, 68 passing, 4 skipped, exit 0, across three
+consecutive runs on **Unity 6000.6.0f1** (Windows). Left as recorded — it
+describes a smaller suite than today's, not a different outcome; the current
+counts, on both editors, are under *Runtime floor* below.
 
 - the package is compiled and loaded by Unity, is reported by
   `PackageInfo.FindForAssembly`, and its host singleton is reachable
@@ -153,6 +158,42 @@ per assembly.
   afterwards, a `GlobalObjectId` still resolves, a `unity:session:*` handle from
   before the reload fails with `NOT_FOUND` rather than addressing something
   else, and the listener is released and rebindable
+
+### Play mode, and where a mutation lands
+
+Two defects found by probing before changing anything, both reproduced first:
+
+- **`object.create` ran in play mode.** It really did create a runtime
+  GameObject; reconciliation correctly refused to make a runtime read the
+  authored baseline, so the response reported `outcome: noop` about a mutation
+  that had visibly happened — and the object evaporated on exit. Authoring
+  mutations and transaction control are refused in play mode now with
+  `PLAY_MODE_MUTATION_REFUSED`, retryable, because leaving play mode makes them
+  possible again. The same verb must not mean "author a scene object" in one
+  mode and "spawn something ephemeral" in the other; runtime manipulation, if it
+  is ever wanted, needs its own tool family and its own state domain.
+- **A play mode read was indistinguishable from an authored one.** It carried
+  runtime objects and the authored revision, which versions none of them. Every
+  response carries `state_domain` (`authored` or `play_runtime`) now, and
+  `scene.describe` also reports `playing` and `transitioning`. No runtime
+  revision was invented: nothing has a use for one yet.
+
+`Tests/Editor/RoboVisionPlayModeTests.cs` asserts the refusal, that a refused
+mutation created nothing, that the authored revision and the journal's certainty
+survive a round trip untouched, and that the domain flips back on exit.
+
+Where a mutation lands was the third: `object.create` called `new GameObject`,
+which goes to the active scene, and which scene is active is editor-control
+state that changes outside the authored journal. Measured — after a human
+switched it the journal reported zero events, and the next create landed in the
+other scene. `object.create` takes an explicit `scene` now: required when more
+than one is open, refused as `AMBIGUOUS_TARGET_SCENE` with the candidates and
+which one the editor favours, and inside a Prefab Stage the preview scene is the
+only target, which also fixed objects being created into the main stage where
+the host could not see them. Hashing `active` back into authored state would
+have made an editor-control change look like an edit, and was not done; whether
+active-scene changes belong in the control-plane sequence owed for identity
+events is left to the audit work, where that sequence gets designed.
 
 ### Defects this gate found
 
@@ -214,25 +255,53 @@ stayed monotonic, and no transaction was left active. Mean cycle 13.65ms, p50
   resumption rather than in the host. The stronger claim — the shipped Python
   client connecting to a brand new editor process — is covered by the restart
   gate.
-- **Unity 6000.0 at runtime — infrastructure-blocked.** The declared floor is
-  compile-verified in CI only; every runtime result above is from 6000.6.0f1.
-  Unity Hub is installed at `D:\Unity Hub` and its CLI works, and 6000.0.83f1 —
-  the version CI compiles against — is available to install. Its editor install
-  path is `C:\Program Files\Unity\Hub\Editor`, and `C:` has 0.6 GB free against a
-  19.3 GB editor, so installing one needs the Hub install path repointed at `D:`
-  (197 GB free) plus a full editor download. The same full `C:` is why the
-  pagefile cannot grow, which is what exhausted the commit limit during the one
-  windowed run. A CI runner with a `UNITY_LICENSE` secret would also unblock it.
 - **Repeat volume at the suite level.** The EditMode suite runs three
   consecutive times; the soak covers 200 cycles but exercises one cycle shape
-  rather than all 72 tests.
+  rather than the whole suite.
+
+### Runtime floor
+
+Previously recorded here as infrastructure-blocked: the Hub's editor install
+path was `C:\Program Files\Unity\Hub\Editor` on a drive with 0.6 GB free
+against a ~19 GB editor. That is resolved. The Hub's install path is
+`D:\Unity Hub\Editor` and its download location `D:\TEMP`, both verified
+before anything was run, and 6000.0.83f1 — the version the compile gate uses —
+is installed there.
+
+The floor is therefore executed rather than inferred, and the counts are kept
+apart from the 6000.6 ones rather than merged into a single number:
+
+| editor | gate | result |
+| --- | --- | --- |
+| 6000.0.83f1 (declared floor) | EditMode suite | 112 tests, 108 passed, 0 failed, 4 SceneView skips |
+| 6000.0.83f1 (declared floor) | restart + package re-resolution | 11/11 checks, all three phases on 6000.0.83f1 |
+| 6000.6.0f1 (development) | EditMode suite | 112 tests, 108 passed, 0 failed, 4 SceneView skips |
+| 6000.6.0f1 (development) | restart + package re-resolution | 11/11 checks |
+| 6000.0.83 (CI) | compile only | `ROBOVISION_UNITY_COMPILE_PASS` |
+
+Both editors were confirmed from the run's own log — `Initialize engine version:
+6000.0.83f1` — rather than from the path it was launched by. Compile coverage
+did not discharge this and never could; it is recorded separately above because
+it still catches a different class of problem earlier.
+
+The historical figures elsewhere in this file — 72 tests, 68 passing, 4 skipped —
+are from the C2 checkpoint and are left as they were. They describe a smaller
+suite, not a different result.
 
 ### Identity contract
 
 | reference | issued for | survives domain reload | survives editor restart |
 | --- | --- | --- | --- |
 | `unity:GlobalObjectId_*` | objects in a saved scene or asset | yes, asserted | yes, asserted by the restart gate |
-| `unity:session:<n>` | unsaved scene objects with no persistent id | no, asserted to fail `NOT_FOUND` | no, asserted to fail `NOT_FOUND` |
+| `unity:session:<scope>:<n>` | unsaved scene objects with no persistent id | no, asserted to fail `NOT_FOUND` | no, asserted to fail `NOT_FOUND` |
+
+The scope is the loaded domain, as a whole GUID. Without it the numeric part is
+a counter that restarts at 1 in a rebuilt domain, so a client holding
+`unity:session:1` could be handed a different object afterwards and the
+stale-handle assertion above would be passing on how high the counter happened
+to have climbed. It was eight hex characters — 32 bits — behind a comment
+promising a domain's scope is never reused, which 32 bits does not keep. The
+collision is now constructed by hand in the test rather than waited for.
 
 `object.inspect` reports `identity_persistent` so a client never has to infer
 which kind it holds.

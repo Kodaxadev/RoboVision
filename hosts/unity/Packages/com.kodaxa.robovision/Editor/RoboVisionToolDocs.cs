@@ -96,11 +96,17 @@ namespace Kodaxa.RoboVision.Editor
                 new[] { "object", "inspect" },
                 ObjectSchema(new JObject { ["object"] = ObjectRef() }, "object")),
             ["object.create"] = Doc(
-                "Create a Unity GameObject with optional local transform through Undo-aware editor APIs.",
+                "Create a Unity GameObject with optional local transform through Undo-aware editor APIs. "
+                + "Required in Edit Mode; refused while the editor is playing.",
                 new[] { "object", "create", "scene" },
                 ObjectSchema(new JObject
                 {
                     ["name"] = StringSchema(),
+                    ["scene"] = StringSchema(
+                        "handle of the scene to create in, as reported by scene.describe. Required "
+                        + "when more than one scene is open, since which one is active is editor "
+                        + "state that changes without any journal event; ignored inside a prefab "
+                        + "stage, where the preview scene is the only target"),
                     ["local_position"] = Vec3(),
                     ["local_rotation"] = Quat(),
                     ["local_scale"] = Vec3()

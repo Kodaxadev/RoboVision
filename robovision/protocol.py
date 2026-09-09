@@ -57,6 +57,11 @@ class Response:
     # A successful command that changed nothing is not a change, and the scene
     # revision does not advance for it.
     outcome: str | None = None
+    # Which universe the state in this response came from: `authored`, or
+    # `play_runtime` in a Unity editor that is playing. The revision is always
+    # the authored one, and in `play_runtime` it versions none of what is being
+    # reported — the objects are runtime observations, discarded on exit.
+    state_domain: str | None = None
     rv: str = PROTOCOL_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -71,4 +76,6 @@ class Response:
             out["timing_ms"] = round(self.timing_ms, 3)
         if self.outcome is not None:
             out["outcome"] = self.outcome
+        if self.state_domain is not None:
+            out["state_domain"] = self.state_domain
         return out

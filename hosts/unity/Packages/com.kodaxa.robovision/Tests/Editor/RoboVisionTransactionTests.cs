@@ -178,6 +178,74 @@ namespace Kodaxa.RoboVision.Editor.Tests
                 "a forced rollback did not report that it overrode an external change");
         }
 
+        /// <summary>
+        /// An identity-only change still contaminates a transaction, on purpose.
+        /// </summary>
+        /// <remarks>
+        /// Saving an untitled scene moves the deep fingerprint without moving
+        /// the authored scene revision: every object with only a session handle
+        /// earns a durable GlobalObjectId, which is re-addressing rather than
+        /// authoring. The two counters disagreeing here is not a bug — the
+        /// revision answers "did the authored scene move" and the fingerprint
+        /// answers "does this hash the way it did", and after an upgrade it
+        /// genuinely does not.
+        ///
+        /// Contamination is judged on the fingerprint, and that stays
+        /// deliberately conservative rather than being softened to match the
+        /// revision. Forcing past it does not help either, and that is the part
+        /// worth pinning: a rollback proves restoration by reproducing the
+        /// checkpoint's fingerprint, and it cannot, because the identities in
+        /// that checkpoint no longer exist. So it reports ROLLBACK_INCOMPLETE
+        /// rather than claiming a restoration it cannot demonstrate — which is
+        /// the correct answer, and the reason not to soften contamination here.
+        ///
+        /// Whether a transaction should instead re-checkpoint across an identity
+        /// upgrade belongs to the transaction adoption and recovery work; this
+        /// pins the behaviour so that change has to be deliberate.
+        /// </remarks>
+        [Test]
+        public void AnIdentityUpgradeContaminatesAnOpenTransaction()
+        {
+            var directory = "Assets/RoboVisionTxIdentity";
+            if (!System.IO.Directory.Exists(directory)) System.IO.Directory.CreateDirectory(directory);
+            AssetDatabase.Refresh();
+            var path = directory + "/TxIdentity.unity";
+            try
+            {
+                var sessionId = _rv.CreateObject("Upgraded");
+                Assert.That(sessionId, Does.StartWith("unity:session:"),
+                    "precondition: the object must have no durable identity yet");
+
+                var id = _rv.BeginTransaction("spanning a save");
+                var revision = _rv.Result("scene.describe").Value<long>("revision");
+
+                UnityEditor.SceneManagement.EditorSceneManager.SaveScene(
+                    UnityEngine.SceneManagement.SceneManager.GetActiveScene(), path);
+                _rv.Call("scene.describe"); // let the host observe it
+
+                Assert.That(_rv.Result("scene.describe").Value<long>("revision"), Is.EqualTo(revision),
+                    "re-addressing an object moved the authored scene revision");
+
+                _rv.Call("transaction.rollback", new JObject { ["transaction"] = id },
+                    ok: false, code: "TRANSACTION_CONTAMINATED");
+
+                // And forcing it does not manufacture a restoration: the
+                // checkpoint named objects by identities that no longer exist.
+                var forced = _rv.Call("transaction.rollback",
+                    new JObject { ["transaction"] = id, ["force"] = true },
+                    ok: false, code: "ROLLBACK_INCOMPLETE");
+                Assert.That(((JObject)forced["error"]["data"]).Value<string>("expected_fingerprint"),
+                    Is.Not.EqualTo(((JObject)forced["error"]["data"]).Value<string>("actual_fingerprint")),
+                    "the rollback reported incomplete with nothing to distinguish");
+            }
+            finally
+            {
+                AssetDatabase.DeleteAsset(path);
+                if (AssetDatabase.IsValidFolder(directory)) AssetDatabase.DeleteAsset(directory);
+                AssetDatabase.Refresh();
+            }
+        }
+
         [Test]
         public void SecondTransactionIsRefusedWhileOneIsActive()
         {

@@ -307,6 +307,59 @@ namespace Kodaxa.RoboVision.Editor.Tests
                 "a handle issued after the reload reused a name from before it");
         }
 
+        /// <summary>
+        /// A handle from a dead domain cannot be a handle in this one.
+        /// </summary>
+        /// <remarks>
+        /// The numeric part is a counter that restarts at 1 in the rebuilt
+        /// domain, so without a scope a client holding `unity:session:1` would
+        /// eventually be handed a different object under the same name, and the
+        /// stale-handle test above would be passing on the accident of how high
+        /// the counter had climbed. The scope is a whole GUID: it was truncated
+        /// to eight hex characters, which is 32 bits behind a comment promising
+        /// a domain's scope is never reused.
+        ///
+        /// The collision is constructed rather than waited for, because waiting
+        /// for a counter to line up is not a test.
+        /// </remarks>
+        [UnityTest]
+        public IEnumerator ASessionHandleFromAPreviousDomainCannotCollideWithANewOne()
+        {
+            Harness.FreshScene();
+            var before = NewHarness();
+            var stale = before.CreateObject("BeforeReload");
+            SessionState.SetString(SessionKey, stale);
+
+            yield return new EnterPlayMode();
+            yield return new ExitPlayMode();
+
+            var staleHandle = SessionState.GetString(SessionKey, null);
+            Assert.That(staleHandle, Is.Not.Null.And.Not.Empty, "the test lost its own state");
+
+            var after = NewHarness();
+            var reissued = after.CreateObject("AfterReload");
+
+            var staleParts = staleHandle.Split(':');
+            var freshParts = reissued.Split(':');
+            Assert.That(staleParts.Length, Is.EqualTo(4),
+                "a session handle must be unity:session:<scope>:<n>; got " + staleHandle);
+            Assert.That(freshParts.Length, Is.EqualTo(4));
+            Assert.That(staleParts[2], Has.Length.EqualTo(32),
+                "the scope is not a whole GUID: " + staleHandle);
+            Assert.That(freshParts[2], Is.Not.EqualTo(staleParts[2]),
+                "the rebuilt domain reused the previous domain's handle scope");
+
+            // The dangerous case, built by hand: the same counter value in the
+            // new domain must still not be the old token.
+            var collision = String.Join(":", freshParts[0], freshParts[1], freshParts[2],
+                staleParts[3]);
+            Assert.That(collision, Is.Not.EqualTo(staleHandle),
+                "an equal counter in a new domain produced the retired token");
+            var response = after.Call("object.inspect", new JObject { ["object"] = staleHandle },
+                ok: false, code: "NOT_FOUND");
+            Assert.That(response["error"].Value<string>("message"), Is.Not.Null);
+        }
+
         [UnityTest]
         public IEnumerator TransportComesBackServingAfterADomainReload()
         {

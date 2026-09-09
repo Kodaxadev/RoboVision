@@ -38,8 +38,13 @@ namespace Kodaxa.RoboVision.Editor
         internal const string Prefix = "unity:session:";
 
         /// <summary>This loaded domain, minted once and never reused.</summary>
-        private static readonly string Scope =
-            Guid.NewGuid().ToString("N").Substring(0, 8) + ":";
+        /// <remarks>
+        /// The whole GUID. It was truncated to eight hex characters, which is 32
+        /// bits of scope behind a comment promising a domain's scope is never
+        /// reused — a promise 32 bits does not keep, and there was never a
+        /// reason to shorten it.
+        /// </remarks>
+        private static readonly string Scope = Guid.NewGuid().ToString("N") + ":";
 
         private static readonly Dictionary<UnityEngine.Object, string> Tokens =
             new Dictionary<UnityEngine.Object, string>();

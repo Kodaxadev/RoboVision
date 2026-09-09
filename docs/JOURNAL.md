@@ -221,11 +221,24 @@ moving the fingerprint with nothing to attribute it to. Switching which scene is
 active authors nothing, journals nothing, and is reported in `scene.describe`
 because an agent still needs to know where its next object will land.
 
-Unity play mode is neither. Entering it instantiates the open scenes and gives
-their objects runtime addresses; leaving it discards all of that. Reads are
-answered while it runs, and none of them becomes the authored baseline — before
-this was enforced, a play mode round trip advanced the scene revision and cost
-the journal its certainty over a scene nobody had touched.
+Unity play mode is neither, and is the sharpest case. Entering it instantiates
+the open scenes and gives their objects runtime addresses; leaving it discards
+all of that.
+
+Reads are answered while it runs — looking at a running scene is a legitimate
+thing to want — and none of them becomes the authored baseline. Before that was
+enforced, a play mode round trip advanced the scene revision and cost the
+journal its certainty over a scene nobody had touched. The response says which
+universe it is describing through `state_domain`, because a runtime read
+carrying the authored revision is otherwise indistinguishable from an authored
+one, and that revision versions none of what it is showing.
+
+Mutations are refused outright, with `PLAY_MODE_MUTATION_REFUSED`. Reconciliation
+declining to treat a runtime read as authored state was correct but not
+sufficient on its own: `object.create` still ran, really created a runtime
+object, and the response reported `outcome: noop` about it — a command that had
+visibly done something, described as having done nothing, with the result gone
+by the time anyone could look. Authoring is an Edit Mode operation.
 
 The journal is a performance optimization for polling. It never substitutes for a
 fingerprint in a proof, and transactions keep comparing deep fingerprints.

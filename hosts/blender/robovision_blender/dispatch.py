@@ -13,7 +13,7 @@ from typing import Any
 
 import bpy
 
-from .protocol import PROTOCOL_VERSION
+from .protocol import AUTHORED, PROTOCOL_VERSION
 from .registry import AUTHORITATIVE, NOTIFIED, HostError
 
 # A transaction's own bookkeeping is not a scene mutation, so it does not go
@@ -108,8 +108,13 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
             moved = runtime._accept_own_mutation(before=checkpoint, request_id=request_id)
             outcome = "applied" if moved else "noop"
 
+        # Blender has no runtime universe to confuse with the authored one, so
+        # the domain is a constant here — reported anyway, because a client
+        # driving both editors must be able to read the same field in both
+        # rather than infer it from which host answered.
         response = _envelope(runtime, request_id, started, ok=True,
-                             consistency=spec.reads, result=result)
+                             consistency=spec.reads, result=result,
+                             state_domain=AUTHORED)
         if outcome is not None:
             response["outcome"] = outcome
         return response

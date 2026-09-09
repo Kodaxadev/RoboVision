@@ -23,6 +23,21 @@ control-plane, not something an author wrote, so it moves neither `outcome` nor
 `IDENTITY_REPAIRED` with the basis for the claim, because the agent's valid
 address for an object may have changed even though the scene did not.
 
+Every response also carries `state_domain`, saying which universe the state in
+it came from. `authored` is the scene as authored. `play_runtime` means a Unity
+editor is playing: the objects reported are runtime instances of the open
+scenes, discarded when play mode ends, and the `revision` — always the authored
+one — versions none of them. `scene.describe` additionally reports `playing` and
+`transitioning`. There is no runtime revision, because nothing needs one yet.
+
+Authoring is an Edit Mode operation. Mutating and transaction-control methods
+are refused during play mode with `PLAY_MODE_MUTATION_REFUSED`, retryable, since
+leaving play mode makes them possible again. The alternative — the same
+`object.create` meaning "author a scene object" in one mode and "spawn something
+ephemeral" in the other — was measured doing exactly that, reporting
+`outcome: noop` about a runtime object it had really created and which then
+disappeared.
+
 Every response also carries `consistency`, saying what the revision it reports is
 worth: `authoritative` means the host re-read the scene for this call, so the
 state, the revision and the journal position describe one moment; `notified`
@@ -33,7 +48,7 @@ state. The catalog publishes each method's class as `reads`.
 ## Success
 
 ```json
-{"rv":"1.0","id":"uuid","ok":true,"revision":42,"consistency":"authoritative","outcome":"applied","result":{},"timing_ms":1.72}
+{"rv":"1.0","id":"uuid","ok":true,"revision":42,"consistency":"authoritative","state_domain":"authored","outcome":"applied","result":{},"timing_ms":1.72}
 ```
 
 ## Failure
@@ -54,6 +69,8 @@ state. The catalog publishes each method's class as `reads`.
 - `STALE_TOPOLOGY`
 - `STALE_WORLD`
 - `JOURNAL_REPLACED`
+- `PLAY_MODE_MUTATION_REFUSED`
+- `AMBIGUOUS_TARGET_SCENE`
 - `EPOCH_SUPERSEDED`
 - `SEQUENCE_TOO_OLD`
 - `INVALID_CONTEXT`
@@ -73,7 +90,10 @@ silently. The host checkpoints before the operation and, on failure, restores
 that checkpoint and reports the outcome:
 
 - the operation error carries `data.automatic_recovery` when the pre-operation
-  fingerprint was restored, including how many undo steps that took;
+  fingerprint was restored, including how many undo steps that took, and the
+  operation's own error payload moves to `data.operation_error_data` beside it.
+  That happens for a refusal that changed nothing as much as for a failure that
+  did, so a client reading its own payload must look in both places;
 - `MUTATION_RECOVERY_INCOMPLETE` replaces the operation error when restoration
   could not be proved, and carries the original error in
   `data.original_error`. The caller must treat the scene as unknown and

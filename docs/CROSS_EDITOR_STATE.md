@@ -241,11 +241,24 @@ minted after a reopen, a session handle that died with its domain — nothing is
 linked and the delete and create stand, which is what the host actually knows.
 
 Neither advances the scene revision: that counter names authored state, and
-re-addressing an object is the host's bookkeeping. **Still owed by the audit
-work:** a control-plane revision or equivalent sequence of its own, so a client
-can tell "nothing has happened" from "nothing authored has happened", and an
-audit record that exposes control-plane metadata changes generally rather than
-only these two.
+re-addressing an object is the host's bookkeeping.
+
+A transaction sees it differently, and deliberately so. Contamination is judged
+on the deep fingerprint, which an identity upgrade does move, so a save inside an
+open transaction is reported as external change — and forcing past it still
+fails with `ROLLBACK_INCOMPLETE`. That is the correct answer rather than an
+inconsistency to be smoothed away: rollback proves restoration by reproducing
+the checkpoint's fingerprint, and it cannot, because the identities in that
+checkpoint no longer exist. Whether a transaction should re-checkpoint across an
+identity upgrade belongs to transaction adoption and recovery; the current
+behaviour is pinned by a test so that change has to be deliberate.
+
+**Still owed by the audit work:** a control-plane revision or equivalent sequence
+of its own, so a client can tell "nothing has happened" from "nothing authored
+has happened"; an audit record that exposes control-plane metadata changes
+generally rather than only these two; and a decision on whether editor-control
+changes that author nothing — which scene is active, most obviously — belong in
+that same sequence.
 
 ## 12. Lifecycle invalidation
 

@@ -6,6 +6,7 @@ using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -48,7 +49,14 @@ namespace Kodaxa.RoboVision.Editor
         {
             return new JObject
             {
+                // The revision is always the authored one. In play mode the
+                // objects below are runtime observations that it does not
+                // version, which is what state_domain is here to say.
                 ["revision"] = host.Revision,
+                ["state_domain"] = RoboVisionHost.StateDomain,
+                ["playing"] = EditorApplication.isPlaying,
+                ["transitioning"] = EditorApplication.isPlayingOrWillChangePlaymode
+                    && !EditorApplication.isPlaying,
                 ["bridge"] = host.Bridge,
                 ["world_incarnation"] = host.WorldIncarnation,
                 ["scenes"] = host.CurrentRead.State["scenes"]
@@ -157,13 +165,82 @@ namespace Kodaxa.RoboVision.Editor
             return RoboVisionSceneRead.ObjectState(go);
         }
 
+        /// <summary>
+        /// Create an object somewhere the caller actually chose.
+        /// </summary>
+        /// <remarks>
+        /// `new GameObject` lands in the active scene, and which scene is active
+        /// is editor-control state that changes outside the authored journal: a
+        /// human switching it produces no event, no revision movement and
+        /// nothing a polling client can see. Measured — after such a switch the
+        /// journal reported zero events and the next create landed in the other
+        /// scene. A client must not perform a different operation than the one
+        /// it issued because something it could not observe changed underneath
+        /// it, so with more than one scene open the target has to be named.
+        /// </remarks>
         private static JObject CreateObject(JObject parameters)
         {
             var name = parameters.Value<string>("name") ?? "RoboVisionObject";
+            var target = TargetScene(parameters);
             var go = new GameObject(name);
             Undo.RegisterCreatedObjectUndo(go, "RoboVision create " + name);
+            if (go.scene != target) Undo.MoveGameObjectToScene(go, target, "RoboVision place " + name);
             ApplyTransform(go.transform, parameters);
             return RoboVisionSceneRead.ObjectState(go);
+        }
+
+        /// <summary>Where a new object goes: named, or unambiguous, or refused.</summary>
+        private static Scene TargetScene(JObject parameters)
+        {
+            var requested = parameters.Value<string>("scene");
+            var stage = PrefabStageUtility.GetCurrentPrefabStage();
+            if (stage != null && stage.scene.IsValid())
+            {
+                // The prefab stage is the whole world while it is open, and its
+                // preview scene is not the active one — an object created
+                // without this would land in the main stage, outside everything
+                // the host is describing.
+                if (requested != null && requested != stage.scene.handle.ToString())
+                    throw new RoboVisionException("INVALID_PARAMS",
+                        "a prefab stage is open; its preview scene is the only target", false,
+                        new JObject { ["prefab_stage"] = stage.scene.handle.ToString() });
+                return stage.scene;
+            }
+
+            var loaded = new List<Scene>();
+            for (var i = 0; i < SceneManager.sceneCount; i++)
+            {
+                var scene = SceneManager.GetSceneAt(i);
+                if (scene.isLoaded) loaded.Add(scene);
+            }
+            if (loaded.Count == 0)
+                throw new RoboVisionException("INVALID_CONTEXT", "no scene is loaded to create in");
+
+            if (requested != null)
+            {
+                foreach (var scene in loaded)
+                {
+                    if (scene.handle.ToString() == requested) return scene;
+                }
+                throw new RoboVisionException("NOT_FOUND", "no loaded scene has that handle", false,
+                    new JObject { ["scene"] = requested, ["candidates"] = Candidates(loaded) });
+            }
+
+            if (loaded.Count == 1) return loaded[0];
+            throw new RoboVisionException("AMBIGUOUS_TARGET_SCENE",
+                "more than one scene is open; name the scene to create in", false,
+                new JObject { ["candidates"] = Candidates(loaded) });
+        }
+
+        private static JArray Candidates(List<Scene> scenes)
+        {
+            return new JArray(scenes.Select(scene => new JObject
+            {
+                ["handle"] = scene.handle.ToString(),
+                ["name"] = scene.name,
+                ["path"] = scene.path,
+                ["active"] = scene == SceneManager.GetActiveScene()
+            }).Cast<object>().ToArray());
         }
 
         private static JObject DeleteObject(JObject parameters)

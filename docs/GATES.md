@@ -70,10 +70,19 @@ before the run is unchanged after it.
 | --- | --- | --- |
 | gate0/1/1-adversarial/1-soak/2 | Blender 5.2.1 LTS, Linux CI | pass |
 | gate0/1/1-adversarial/1-soak/2 | Blender 5.1.2, Windows | pass |
+| gate0, semantic query, document lifecycle, add-on lifecycle, journal | Blender 5.1.2, Windows, headless | pass, current checkpoint |
 | soak 500 cycles | Blender 5.1.2, Windows | pass, mean 47.8ms, max 55.0ms |
 | soak 250 cycles | Blender 5.2.1 LTS, Linux CI | pass, mean 35.1ms, max 40.9ms |
 
 The Gate 1 baseline fingerprint is identical on both platforms and versions.
+
+The two rows are not interchangeable and are kept apart deliberately. CI runs
+**Blender 5.2.1 LTS** on Linux and covers the whole sequence, including the four
+gates that need an interactive editor — gate 1, its adversarial paths, the soak
+and gate 2 — under xvfb. The local Windows editor is **5.1.2**, and the five
+headless gates are what run there; the interactive four report
+`UNDO_UNAVAILABLE` and `INVALID_CONTEXT` in `--background` by design, so a local
+headless run neither covers nor contradicts them.
 
 ### Document and process lifecycle
 
