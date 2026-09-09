@@ -5,6 +5,25 @@ from typing import Any, Callable, Iterable
 
 from .tool_docs import METHOD_DOCS
 
+# What a call guarantees about the scene state behind its answer.
+#
+# This is a separate axis from `evidence`, which says whether a call produces a
+# durable artifact. Only the two capture methods are evidence-producing, while
+# `scene.describe` produces no artifact and still must not answer from a stale
+# baseline, so the two cannot be the same flag.
+#
+# AUTHORITATIVE  the host re-reads the scene before answering, so the state, the
+#                scene revision and the journal position in one response all
+#                describe the same moment
+# NOTIFIED       the answer reflects the last editor notification received.
+#                Cheap on purpose, and it may lag a change the editor never
+#                announced; the response says so rather than implying freshness
+# INDEPENDENT    the answer does not depend on scene state at all
+AUTHORITATIVE = "authoritative"
+NOTIFIED = "notified"
+INDEPENDENT = "independent"
+READ_CONSISTENCY = (AUTHORITATIVE, NOTIFIED, INDEPENDENT)
+
 
 class HostError(RuntimeError):
     def __init__(self, code: str, message: str, *, data: Any = None, retryable: bool = False):
@@ -21,6 +40,9 @@ class ToolSpec:
     mutating: bool = False
     evidence: bool = False
     requires_ui: bool = False
+    # Authoritative by default: a tool that presents scene state and forgets to
+    # classify itself should be correct and slow, never fast and wrong.
+    reads: str = AUTHORITATIVE
     stability: str = "alpha"
     summary: str = ""
     tags: tuple[str, ...] = ()
@@ -32,6 +54,7 @@ class ToolSpec:
             "mutating": self.mutating,
             "evidence": self.evidence,
             "requires_ui": self.requires_ui,
+            "reads": self.reads,
             "stability": self.stability,
             "summary": self.summary,
             "tags": list(self.tags),
@@ -57,6 +80,7 @@ class ToolRegistry:
         mutating: bool = False,
         evidence: bool = False,
         requires_ui: bool = False,
+        reads: str = AUTHORITATIVE,
         stability: str = "alpha",
         summary: str | None = None,
         tags: Iterable[str] | None = None,
@@ -64,6 +88,10 @@ class ToolRegistry:
     ) -> None:
         if name in self._tools:
             raise RuntimeError(f"duplicate RoboVision tool: {name}")
+        if reads not in READ_CONSISTENCY:
+            raise RuntimeError(f"{name}: reads must be one of {READ_CONSISTENCY}")
+        if mutating and reads != AUTHORITATIVE:
+            raise RuntimeError(f"{name}: a mutating tool re-reads before it runs; it cannot be {reads}")
         documented = METHOD_DOCS.get(name, {})
         resolved_summary = str(summary if summary is not None else documented.get("summary", ""))
         resolved_tags = tuple(str(tag) for tag in (tags if tags is not None else documented.get("tags", ())))
@@ -74,6 +102,7 @@ class ToolRegistry:
             mutating,
             evidence,
             requires_ui,
+            reads,
             stability,
             resolved_summary,
             resolved_tags,

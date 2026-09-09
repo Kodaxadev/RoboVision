@@ -8,7 +8,8 @@ from ..registry import HostError
 def begin(params, runtime):
     tx_id = str(params.get("transaction") or ("tx:" + str(uuid.uuid4())))
     label = str(params.get("label") or "agent edit")
-    return runtime.transactions.begin(tx_id, label, runtime.resync())
+    # Already reconciled by the dispatcher for this call.
+    return runtime.transactions.begin(tx_id, label, runtime.current_snapshot())
 
 
 def commit(params, runtime):

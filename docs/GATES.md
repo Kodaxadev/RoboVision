@@ -143,6 +143,28 @@ The refusals matter as much as the events, because an empty event list reads as
 The journal is a polling optimisation. Nothing that has to be proved uses it:
 transactions still compare deep fingerprints.
 
+### Read consistency
+
+`tests/blender/journal_reads.py` covers the policy that decides what a
+response's revision is worth. Measured before it existed: with a notification
+missed, `scene.describe` returned an object at its genuinely current position
+stamped with the scene revision and journal cursor of the state before it, and
+journalled nothing — and five other state-bearing reads did the same.
+
+Every tool now declares `authoritative`, `notified` or `independent`, the
+dispatcher enforces it, and the response reports which it got. The gate asserts
+that a state-bearing read after a missed notification returns current state with
+an advanced revision and an editor-attributed event whose revision matches the
+response; that journal polling and the capability catalog deliberately do *not*
+reconcile, so the cheap class stays cheap; and that the set of non-authoritative
+tools is exactly the reviewed list, so a new tool cannot drift into it silently.
+
+It also pins the control-plane boundary: RoboVision's `_robovision_*` storage
+stays out of the authored custom properties a snapshot reports, while identity
+and mesh revision still reach the fingerprint through their canonical fields.
+Rewriting a bookkeeping property to the value it already holds is a no-op; an
+authored property is a change.
+
 ### Bridge and add-on lifecycle
 
 `tests/blender/lifecycle_addon.py` (headless) separates three events that were

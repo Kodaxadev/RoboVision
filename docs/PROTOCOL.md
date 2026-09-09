@@ -16,10 +16,17 @@ it. `revision` advances only for `applied`, because it names authoritative scene
 state rather than commands executed — a `noop` writes no journal events either,
 and the two must never disagree about whether anything happened.
 
+Every response also carries `consistency`, saying what the revision it reports is
+worth: `authoritative` means the host re-read the scene for this call, so the
+state, the revision and the journal position describe one moment; `notified`
+means the answer reflects the last editor notification and may lag a change the
+editor never announced; `independent` means the answer does not depend on scene
+state. The catalog publishes each method's class as `reads`.
+
 ## Success
 
 ```json
-{"rv":"1.0","id":"uuid","ok":true,"revision":42,"outcome":"applied","result":{},"timing_ms":1.72}
+{"rv":"1.0","id":"uuid","ok":true,"revision":42,"consistency":"authoritative","outcome":"applied","result":{},"timing_ms":1.72}
 ```
 
 ## Failure
@@ -113,7 +120,7 @@ Every host returns:
 Capabilities list methods with at least:
 
 ```json
-{"name":"mesh.bevel","mutating":true,"evidence":false,"requires_ui":false,"stability":"alpha"}
+{"name":"mesh.bevel","mutating":true,"evidence":false,"requires_ui":false,"reads":"authoritative","stability":"alpha"}
 ```
 
 Clients must not infer support from a method existing on another host.

@@ -35,12 +35,28 @@ world it was issued in, and is validated in that order:
 | a document incarnation that is not loaded | `STALE_DOCUMENT` |
 | a superseded certainty epoch | `EPOCH_SUPERSEDED` |
 | a sequence the journal no longer retains | `SEQUENCE_TOO_OLD` |
-| a sequence ahead of the journal | `INVALID_PARAMS`; no host issued it |
+| a sequence ahead of the journal | `INVALID_PARAMS`; no such position exists |
+| a malformed, non-string or out-of-range cursor | `INVALID_PARAMS` |
 
-Every refusal carries `current_cursor`, so a client is always told where to
-resume. Calling without a cursor is a bootstrap: the host says where the journal
-is and returns **no events**, because a client that never held a position cannot
-tell a truncated history from a complete one.
+Every one of those refusals carries `current_cursor`. A client that cannot
+continue needs exactly one thing to recover, it is the same thing in all six
+cases, and a client with an unparseable cursor and no offered replacement has
+nowhere to go but a full resynchronisation.
+
+What validation establishes, precisely: the cursor is well formed, names the
+document incarnation loaded now, names the current certainty epoch, and falls
+inside the retained range. It does **not** establish issuance — nothing is
+signed, so a client that constructs a syntactically valid cursor for the current
+world is indistinguishable from one handed the same string. That is deliberate
+for a read-only journal: a forged cursor reads events its caller could already
+read, while the checks that matter are about staleness, which a forger has no
+reason to fake. If the journal ever gains side effects, this stops being enough.
+
+Omitting the cursor is a bootstrap: the host says where the journal is and
+returns **no events**, because a client that never held a position cannot tell a
+truncated history from a complete one. Passing `cursor: null` is not the same
+claim and is refused — a client whose position came back null has lost it, and
+answering "nothing changed" is the exact failure this call exists to prevent.
 
 Both editors under-report. `bpy.msgbus` does not fire for a viewport drag;
 `ObjectChangeEventStream` is a per-frame view a batch operation can outrun. So
@@ -51,6 +67,37 @@ certainty is tracked as an **epoch**:
   certainty for the current epoch
 - **once cleared, certainty is sticky.** A later clean-looking notification does
   not restore trust. Only an authoritative snapshot opens a new epoch
+
+## Read consistency
+
+Reconciliation is not free, and not every call needs it, so each tool declares
+what its answer is worth. The dispatcher enforces the declaration; a handler
+never arranges its own freshness.
+
+| class | before the handler runs | used by |
+| --- | --- | --- |
+| `authoritative` | a full deep read, reconciled | every mutation, and everything that presents scene state |
+| `notified` | service a pending notification, nothing more | `scene.changes_since`, `system.ping`, `system.hello` |
+| `independent` | nothing; the answer does not depend on the scene | `system.capabilities`, `system.method` |
+
+The default is `authoritative`, so a tool that presents scene state and forgets
+to classify itself is correct and slow rather than fast and wrong. Every response
+reports the class it got, and the catalog publishes it per method.
+
+This is a separate axis from `evidence`, which says whether a call produces a
+durable artifact. Only the two capture methods are evidence-producing, while
+`scene.describe` produces no artifact and still must not answer from a stale
+baseline, so the two cannot be one flag.
+
+Why it is not optional: measured with a notification missed, `scene.describe`
+returned an object at its genuinely current position stamped with the scene
+revision and journal cursor of the state *before* it, and journalled nothing.
+Either half being stale is survivable. The pair is not — it tells a client the
+state it is looking at is already accounted for.
+
+Journal polling is deliberately in the cheap class. Reconciling there would make
+every poll a deep read and would make polling itself the thing that discovers
+changes, confusing *reporting* a position with *establishing* one.
 
 ## One reconciliation path
 

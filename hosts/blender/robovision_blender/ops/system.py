@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import bpy
 
-from ..registry import HostError
+from ..registry import INDEPENDENT, NOTIFIED, HostError
 from ..protocol import HOST_VERSION, PROTOCOL_VERSION
 
 
@@ -80,7 +80,12 @@ def hello(_params, runtime):
 
 
 def register(registry) -> None:
-    registry.add("system.ping", ping, stability="beta")
-    registry.add("system.hello", hello, stability="beta")
-    registry.add("system.capabilities", capabilities, stability="beta")
-    registry.add("system.method", method, stability="beta")
+    # ping and hello report the scene revision and the journal position without
+    # reporting any scene state, so they cannot pair current geometry with a
+    # stale revision. They stay cheap and say so; a client that needs a proven
+    # revision takes a snapshot.
+    registry.add("system.ping", ping, reads=NOTIFIED, stability="beta")
+    registry.add("system.hello", hello, reads=NOTIFIED, stability="beta")
+    # Pure protocol metadata: the catalog does not depend on the scene at all.
+    registry.add("system.capabilities", capabilities, reads=INDEPENDENT, stability="beta")
+    registry.add("system.method", method, reads=INDEPENDENT, stability="beta")

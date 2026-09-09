@@ -128,10 +128,17 @@ def impossible_cursors_are_refused(rv: Host) -> None:
     # Same document, same epoch, ahead of everything that has happened: nothing
     # this host issued could say that.
     ahead = f"{prefix}:{document}:{epoch}:{int(sequence) + 500}"
-    rv.call("scene.changes_since", {"cursor": ahead}, ok=False, code="INVALID_PARAMS")
-
-    for malformed in ("", "nonsense", "rvcursor:a:b", "rvcursor:a:b:c", f"{prefix}:{document}:0:1"):
-        rv.call("scene.changes_since", {"cursor": malformed}, ok=False, code="INVALID_PARAMS")
+    malformed = ("", "nonsense", "rvcursor:a:b", "rvcursor:a:b:c",
+                 f"{prefix}:{document}:0:1", f"{prefix}:{document}:x:1", 7, None)
+    # Every refusal, not only the interesting ones, has to leave the client able
+    # to continue. A client that cannot parse its way out of a bad cursor and is
+    # not handed a good one has nowhere to go but a full resynchronisation.
+    for value in (ahead, *malformed):
+        refused = rv.call("scene.changes_since", {"cursor": value}, ok=False, code="INVALID_PARAMS")
+        offered = refused["error"]["data"].get("current_cursor")
+        expect(offered, f"the refusal of {value!r} did not say where to resume from")
+        expect(rv.result("scene.changes_since", {"cursor": offered})["events"] == [],
+               f"the cursor offered when refusing {value!r} did not point at the present")
 
     # The parameters this replaced must be refused, not quietly ignored: a
     # client still sending `after` would otherwise be served an answer to a

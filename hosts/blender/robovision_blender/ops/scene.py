@@ -4,7 +4,7 @@ from mathutils import Vector
 import bpy
 
 from ..identity import normalize_object_ids, object_id
-from ..registry import HostError
+from ..registry import NOTIFIED, HostError
 from ..snapshots import DEEP, diff_snapshots, object_snapshot, resolve_level, scene_snapshot
 
 
@@ -43,13 +43,11 @@ def search(params, _runtime):
 
 def snapshot(params, runtime):
     level = resolve_level(params)
-    # An authoritative read is exactly that, so it reconciles first: anything
-    # the host had missed is attributed and journalled before this call claims
-    # to be a baseline. Reconciliation always reads deep, because the baseline
-    # every later comparison is made against has to be the strongest one
-    # available, whatever level the caller asked to see.
-    reconciled = runtime.reconcile()
-    snap = reconciled["snapshot"] if level == DEEP else scene_snapshot(level=level)
+    # The dispatcher reconciled authoritatively before this handler ran, so the
+    # host's baseline is a deep read of the scene as it is now. Reuse it rather
+    # than paying for a second one; a caller asking for a cheaper level still
+    # gets the level it asked for, over a baseline that is not cheaper.
+    snap = runtime.current_snapshot() if level == DEEP else scene_snapshot(level=level)
     snapshot_id = runtime.store_snapshot(snap)
     # A full authoritative read is the only thing that may restore certainty
     # after the host has admitted it lost track.
@@ -88,7 +86,13 @@ def changes_since(params, runtime):
                 "at 1",
                 data={"rejected_parameter": legacy, "current_cursor": runtime.journal.cursor()},
             )
-    result = runtime.journal.changes_since(params.get("cursor"))
+    # Absent means bootstrap. Present-but-null does not: a client that computed
+    # a null cursor has lost its position, and answering "nothing changed" would
+    # be the exact failure this call exists to avoid.
+    if "cursor" in params:
+        result = runtime.journal.changes_since(params["cursor"])
+    else:
+        result = runtime.journal.bootstrap()
     result["revision"] = runtime.revision
     result["bridge"] = runtime.bridge
     return result
@@ -125,5 +129,8 @@ def register(registry) -> None:
     registry.add("scene.search", search, stability="beta")
     registry.add("scene.snapshot", snapshot, stability="beta")
     registry.add("scene.diff", diff, stability="beta")
-    registry.add("scene.changes_since", changes_since, stability="alpha")
+    # Polling the journal must not cost a deep read, and must not be the thing
+    # that discovers a change: it reports the host's position, it does not
+    # establish it.
+    registry.add("scene.changes_since", changes_since, reads=NOTIFIED, stability="alpha")
     registry.add("scene.raycast", raycast, stability="alpha")

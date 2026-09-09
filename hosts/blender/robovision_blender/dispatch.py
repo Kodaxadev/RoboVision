@@ -14,7 +14,7 @@ from typing import Any
 import bpy
 
 from .protocol import PROTOCOL_VERSION
-from .registry import HostError
+from .registry import AUTHORITATIVE, NOTIFIED, HostError
 
 # A transaction's own bookkeeping is not a scene mutation, so it does not go
 # through the accept path that decides `applied` versus `noop`.
@@ -63,18 +63,28 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
     request_id = raw.get("id") if isinstance(raw.get("id"), str) else "invalid"
     mutation_before: dict[str, Any] | None = None
     try:
-        runtime._refresh_dirty_state()
         method, params, if_revision = validate_request(raw)
         spec = runtime.registry.get(method)
         if spec.requires_ui and bpy.app.background:
             raise HostError("INVALID_CONTEXT", f"{method} requires an interactive Blender UI")
 
+        # Read consistency is a property of the tool, decided here once, rather
+        # than something each handler has to remember to arrange. A tool that
+        # presents scene state re-reads first: otherwise it can return current
+        # geometry stamped with the revision and journal position of the state
+        # before it, which is worse than either being stale on its own.
         checkpoint: dict[str, Any] | None = None
-        if spec.mutating:
-            # Establish the truth first: the concurrency check below is only
+        if spec.mutating or spec.reads == AUTHORITATIVE:
+            # One full read serves both: the concurrency check below is only
             # meaningful against a revision that reflects the scene as it is
-            # right now, not as the last notification left it.
-            checkpoint = runtime.resync()
+            # right now, and so is anything the handler is about to report.
+            authoritative = runtime.resync()
+            if spec.mutating:
+                checkpoint = authoritative
+        elif spec.reads == NOTIFIED:
+            # Deliberately cheap. Service a notification if one arrived, but do
+            # not pay for a deep read on every poll.
+            runtime._refresh_dirty_state()
         if spec.mutating and if_revision is not None and if_revision != runtime.revision:
             raise HostError(
                 "STALE_REVISION",
@@ -98,7 +108,8 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
             moved = runtime._accept_own_mutation(before=checkpoint, request_id=request_id)
             outcome = "applied" if moved else "noop"
 
-        response = _envelope(runtime, request_id, started, ok=True, result=result)
+        response = _envelope(runtime, request_id, started, ok=True,
+                             consistency=spec.reads, result=result)
         if outcome is not None:
             response["outcome"] = outcome
         return response

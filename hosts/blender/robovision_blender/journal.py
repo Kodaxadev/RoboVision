@@ -15,6 +15,8 @@ agent trusts more than it should:
 - a client's position is a cursor that names the document and the epoch it came
   from, so a position from a world that no longer exists is refused rather than
   silently reinterpreted against the current one
+- every cursor refusal carries `current_cursor`, so a client always learns where
+  to resume rather than only that it cannot continue
 
 Anything that has to be *proved* still compares deep fingerprints.
 """
@@ -76,60 +78,80 @@ class ChangeJournal:
         """
         return f"{CURSOR_PREFIX}:{self._cursor_document}:{self.epoch}:{self.sequence}"
 
+    def _refuse(self, code: str, message: str, *, cursor: Any, retryable: bool = False,
+                **extra: Any) -> HostError:
+        """Every cursor refusal says where to resume from.
+
+        A client that cannot continue needs one thing to recover, and it is the
+        same thing in all six cases, so it is attached in one place rather than
+        remembered at each raise.
+        """
+        return HostError(
+            code,
+            message,
+            data={"cursor": cursor, "current_cursor": self.cursor(), **extra},
+            retryable=retryable,
+        )
+
     def _parse_cursor(self, cursor: Any) -> int:
+        """Check a cursor against this journal.
+
+        What this establishes: the cursor is well formed, names the document
+        incarnation loaded now, names the current certainty epoch, and falls
+        inside the retained range. What it does not establish is issuance.
+        Nothing here is signed, so a client that constructs a syntactically
+        valid cursor for the current world is indistinguishable from one handed
+        the same string. That is deliberate for a read-only journal: a forged
+        cursor reads events the caller could already read, while the checks that
+        matter are about staleness, which a forger has no reason to fake.
+        """
         if not isinstance(cursor, str) or not cursor:
-            raise HostError("INVALID_PARAMS", "cursor must be a string issued by this host")
+            raise self._refuse("INVALID_PARAMS", "cursor must be a string", cursor=cursor)
         parts = cursor.split(":")
         if len(parts) != 4 or parts[0] != CURSOR_PREFIX:
-            raise HostError(
+            raise self._refuse(
                 "INVALID_PARAMS",
                 f"cursor must look like {CURSOR_PREFIX}:<document>:<epoch>:<sequence>",
-                data={"cursor": cursor},
+                cursor=cursor,
             )
         _, document, epoch_text, sequence_text = parts
         try:
             epoch = int(epoch_text)
             sequence = int(sequence_text)
         except ValueError as exc:
-            raise HostError("INVALID_PARAMS", "cursor epoch and sequence must be integers",
-                            data={"cursor": cursor}) from exc
+            raise self._refuse("INVALID_PARAMS", "cursor epoch and sequence must be integers",
+                               cursor=cursor) from exc
         if epoch < 1 or sequence < 0:
-            raise HostError("INVALID_PARAMS", "cursor epoch and sequence are out of range",
-                            data={"cursor": cursor})
+            raise self._refuse("INVALID_PARAMS", "cursor epoch and sequence are out of range",
+                               cursor=cursor)
 
         # Order matters. The document is checked first because epoch numbers
         # collide across documents — both start at 1 — so an epoch that matches
         # proves nothing until the world it belongs to has been established.
         if document != self._cursor_document:
-            raise HostError(
+            raise self._refuse(
                 "STALE_DOCUMENT",
-                "that cursor was issued for a document incarnation that is no longer loaded",
-                data={
-                    "cursor": cursor,
-                    "current_document_incarnation": self.document_incarnation,
-                    "current_cursor": self.cursor(),
-                },
+                "that cursor names a document incarnation that is no longer loaded",
+                cursor=cursor,
                 retryable=True,
+                current_document_incarnation=self.document_incarnation,
             )
         if epoch != self.epoch:
-            raise HostError(
+            raise self._refuse(
                 "EPOCH_SUPERSEDED",
-                "the journal has opened a new certainty epoch since that cursor was issued",
-                data={
-                    "cursor": cursor,
-                    "your_epoch": epoch,
-                    "current_epoch": self.epoch,
-                    "current_cursor": self.cursor(),
-                },
+                "the journal has opened a new certainty epoch since that cursor was current",
+                cursor=cursor,
                 retryable=True,
+                your_epoch=epoch,
+                current_epoch=self.epoch,
             )
         if sequence > self.sequence:
-            # Same document, same epoch, ahead of everything that has happened:
-            # nothing this host issued could say that.
-            raise HostError(
+            # Same document, same epoch, ahead of everything that has happened.
+            # No position in this journal carries that number yet.
+            raise self._refuse(
                 "INVALID_PARAMS",
-                "that cursor is ahead of the journal and was not issued by this host",
-                data={"cursor": cursor, "current_cursor": self.cursor()},
+                "that cursor is ahead of the journal; no such position exists yet",
+                cursor=cursor,
             )
         return sequence
 
@@ -257,38 +279,40 @@ class ChangeJournal:
             "retained": len(self._events),
         }
 
-    def changes_since(self, cursor: Any = None) -> dict[str, Any]:
-        """Events after `cursor`, or a starting position if none is given.
+    def bootstrap(self) -> dict[str, Any]:
+        """Where the journal is now, for a client that has no position yet.
 
-        Without a cursor this is a bootstrap: the host returns where the journal
-        is now and no events at all. It deliberately does not hand back whatever
+        Deliberately returns no events. The host does not hand back whatever
         history it happens to still hold, because a client that never had a
         position cannot tell a complete history from a truncated one, and an
         incomplete list read as complete is worse than no list.
-        """
-        if cursor is None:
-            return {
-                **self.state(),
-                "bootstrap": True,
-                "events": [],
-                "has_more": False,
-            }
 
+        Separate from `changes_since` because "I have no cursor" and "here is my
+        cursor, which happens to be null" are different claims, and answering the
+        second as if it were the first would report "nothing changed" to a client
+        whose position was lost.
+        """
+        return {
+            **self.state(),
+            "bootstrap": True,
+            "events": [],
+            "has_more": False,
+        }
+
+    def changes_since(self, cursor: Any) -> dict[str, Any]:
+        """Events after `cursor`. A cursor is required; see `bootstrap`."""
         after = self._parse_cursor(cursor)
         oldest = self._events[0]["sequence"] if self._events else self.sequence
         # `after` is exclusive, so asking for everything after the last event a
         # client already has is always answerable, even at the retention edge.
         if after < oldest - 1:
-            raise HostError(
+            raise self._refuse(
                 "SEQUENCE_TOO_OLD",
                 "the journal no longer retains that far back; take an authoritative snapshot",
-                data={
-                    "cursor": cursor,
-                    "oldest_retained": oldest,
-                    "epoch": self.epoch,
-                    "current_cursor": self.cursor(),
-                },
+                cursor=cursor,
                 retryable=True,
+                oldest_retained=oldest,
+                epoch=self.epoch,
             )
 
         events = [event for event in self._events if event["sequence"] > after]

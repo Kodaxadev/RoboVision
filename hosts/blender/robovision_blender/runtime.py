@@ -229,6 +229,19 @@ class RoboVisionRuntime:
                 revision=self.revision,
             )
 
+    def current_snapshot(self) -> dict[str, Any]:
+        """The deep read the last reconciliation established.
+
+        A handler that needs the scene as of this call reads it from here rather
+        than taking its own, so two parts of one response cannot end up
+        describing two different moments. The dispatcher arranges the
+        reconciliation for every tool declared authoritative; the fallback is
+        for a caller that has not.
+        """
+        if self._last_snapshot is None:
+            return self.reconcile(source=EDITOR)["snapshot"]
+        return self._last_snapshot
+
     def _refresh_dirty_state(self) -> None:
         if not self._dirty:
             return

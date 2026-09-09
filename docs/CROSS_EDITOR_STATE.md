@@ -111,6 +111,21 @@ one open file* and says nothing about two files on disk. Any copy detection
 adopted here must be proven by its own test before it is claimed, and the
 path-mismatch rule above is the only mechanism currently proposed.
 
+## 1.2 Control-plane metadata is not authored state
+
+RoboVision stores its own bookkeeping on the datablocks it addresses:
+`_robovision_id` on the object, `_robovision_mesh_revision` and
+`_robovision_topology` on the mesh. These are control-plane metadata, not
+something a user authored, and they are excluded from the authored custom
+properties a snapshot reports. Without that exclusion the host's own bookkeeping
+would appear as user data and minting an id would read as a scene edit.
+
+The exclusion is of the *storage*, not the values. Identity and mesh revision
+still reach the fingerprint through their canonical fields — `id`, and
+`mesh.revision` — deliberately, because an object whose identity changed is not
+the same object. Writing one of these properties to the value it already holds
+moves nothing.
+
 ## 2. Addressing a host
 
 A loopback port does not identify an editor; two Blenders and two Unitys can be
@@ -279,6 +294,23 @@ identity above. The claim is then bounded and true:
 
 not "deterministic" in the abstract. A reproducible bug becomes a replay
 regression fixture, which is what the Blender and Unity gates already do by hand.
+
+### 11.1 Control-plane changes must be auditable
+
+Control-plane metadata is excluded from *authored* state (§1.2), which is
+correct, and it leaves a gap the audit journal has to close rather than inherit.
+
+Measured today: deleting an object's `_robovision_id` and reading the scene again
+mints a **different** id. The fingerprint moves, the scene revision advances, and
+the change is journalled as `OBJECT_DELETED` for the old id plus `OBJECT_CREATED`
+for the new one, both attributed to `editor`. No object was created or deleted —
+one object's identity was re-minted — and `identity_repairs` reported nothing.
+
+Not redesigned here. Recorded as a requirement on the audit and replay work: an
+audit record must expose identity minting and repair, and control-plane metadata
+changes generally, as what they are, distinctly from authored scene changes. A
+replay driven by the current events would delete and recreate an object that
+never moved.
 
 ## 12. Lifecycle invalidation
 
