@@ -306,11 +306,18 @@ the change is journalled as `OBJECT_DELETED` for the old id plus `OBJECT_CREATED
 for the new one, both attributed to `editor`. No object was created or deleted —
 one object's identity was re-minted — and `identity_repairs` reported nothing.
 
+Unity has the same shape for a different reason. An unsaved object has only a
+session handle; saving is what earns it a durable `GlobalObjectId`. That is a
+real, client-visible change — unlike Blender, where identity is durable from the
+start and saving changes nothing — but it too arrives as `OBJECT_DELETED` plus
+`OBJECT_CREATED`, saying an object was destroyed and another built when one
+object simply became addressable.
+
 Not redesigned here. Recorded as a requirement on the audit and replay work: an
-audit record must expose identity minting and repair, and control-plane metadata
-changes generally, as what they are, distinctly from authored scene changes. A
-replay driven by the current events would delete and recreate an object that
-never moved.
+audit record must expose identity minting, repair and upgrade, and control-plane
+metadata changes generally, as what they are, distinctly from authored scene
+changes. A replay driven by the current events would delete and recreate an
+object that never moved.
 
 ## 12. Lifecycle invalidation
 
@@ -346,6 +353,10 @@ prevent. A client must therefore treat a bridge rotation as invalidating
 document-scoped handles as well. Unity's domain reload keeps the transaction —
 orphaned, then adopted per §4.1 — because the scene it describes is still there,
 which is the one thing that does survive.
+
+Both hosts implement the two incarnations now. In Unity the bridge is minted by
+the host singleton's constructor, so a domain or assembly reload rotates it by
+construction, and the document incarnation follows the loaded scene set.
 
 Evidence today. Blender: save, reopen, load-other and process restart are
 asserted by `tests/blender/lifecycle_document.py` and

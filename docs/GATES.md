@@ -197,9 +197,51 @@ that a mutation which changes nothing reports `outcome: noop` and leaves the
 revision alone, that a rejected mutation does the same, and that the set of
 non-authoritative tools is exactly the reviewed list.
 
-The journal itself is not ported yet, and that ordering is deliberate: a common
-journal abstraction with a missed-notification hole would be duplicated behind
-Unity's more convincing notification API rather than fixed.
+### Unity change journal
+
+`Tests/Editor/RoboVisionJournalTests.cs` covers the ported journal against the
+shapes of change Unity reports differently, all of which have to reach it through
+the same authoritative reconciliation: an Undo-recorded editor edit, a hierarchy
+create, delete and reparent, a component property, a prefab instance override, a
+direct change nothing announced at all, and a burst of RoboVision mutations
+inside one editor update with no tick between them.
+
+The refusals and the silences get the same weight. A broad scene-dirty signal
+carries no object information and must not manufacture history. An agent mutation
+followed by its own next-frame notification must not be journalled twice. A no-op
+produces no revision and no event. A cursor from a replaced document is refused
+with `STALE_DOCUMENT` — asserted with both sides at epoch 1, since epoch numbers
+collide across documents — one past retention with `SEQUENCE_TOO_OLD`, and an
+impossible, malformed or legacy-parameter cursor with `INVALID_PARAMS`, each
+carrying `current_cursor`. A domain reload rotates the bridge and the document
+incarnation and invalidates cursors issued before it. Transaction contamination
+is still detected after the refactor.
+
+What saving does was the hardest part to get right, and the test that pins it
+went through three versions:
+
+- the document signature first included the scene path. Saving fills that in, so
+  it would have rotated the document incarnation and invalidated every cursor for
+  a file rename. It is scene handles now, and the test guards it
+- the scene's `name` and `path` and each object's `scene` were inside the hashed
+  state. They say where the document is stored, not what it contains, so they are
+  reported and no longer hashed, for the same reason `isDirty` already was
+- that was not the whole cause, and the test kept failing. In Unity an unsaved
+  object has only a session handle, and saving is what earns it a durable
+  `GlobalObjectId`. Saving therefore *does* change something a client can see —
+  unlike Blender, where identity is durable from the start — so the test now
+  asserts the identity upgrade rather than claiming saving is silent
+
+How that upgrade is reported is a known gap, asserted rather than glossed: it
+arrives as `OBJECT_DELETED` plus `OBJECT_CREATED`, saying an object was destroyed
+and another built when one object became addressable. Pinned in the test so
+fixing it has to be deliberate, and recorded in CROSS_EDITOR_STATE.md §11.1.
+
+One existing test changed with them: `RevisionAdvancesAcrossMutations` read the
+scene revision off the host before any dispatch and expected it to keep climbing
+across the scene swap its own setup performed. The revision resets with the
+document incarnation, so the assumption was what was wrong; it reads through a
+dispatch now.
 
 ### Not yet proven at Gate 1
 

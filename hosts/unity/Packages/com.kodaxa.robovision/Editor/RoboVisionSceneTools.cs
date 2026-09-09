@@ -21,6 +21,11 @@ namespace Kodaxa.RoboVision.Editor
             host.AddTool("scene.describe", p => Describe(host, p), stability: "beta");
             host.AddTool("scene.snapshot", p => Snapshot(host, p), stability: "beta");
             host.AddTool("scene.diff", p => Diff(host, p), stability: "beta");
+            // Polling the journal must not cost an authoritative read, and must
+            // not be the thing that discovers a change: it reports the host's
+            // position, it does not establish it.
+            host.AddTool("scene.changes_since", p => ChangesSince(host, p),
+                reads: RoboVisionHost.ReadsNotified, stability: "alpha");
             host.AddTool("object.inspect", p => InspectObject(p), stability: "beta");
             host.AddTool("object.create", p => CreateObject(p), mutating: true, stability: "alpha");
             host.AddTool("object.delete", p => DeleteObject(p), mutating: true, stability: "alpha");
@@ -32,13 +37,22 @@ namespace Kodaxa.RoboVision.Editor
 
         /// <summary>Strip editor bookkeeping that is not authored state.</summary>
         /// <remarks>
+        /// Two kinds of field are removed, for the same reason: they move when
+        /// nothing about the scene's contents has.
+        ///
         /// scene.isDirty describes whether the editor thinks the scene needs
-        /// saving, not what the scene contains, and Unity flips it
-        /// asynchronously after an edit. Hashing it meant a fingerprint could
-        /// move with no scene change at all, which the host then reported as an
-        /// out-of-band edit and refused to roll back on. It stays in the
-        /// reported state, where it is useful, and out of the hash, where it is
-        /// actively harmful.
+        /// saving, and Unity flips it asynchronously after an edit. Hashing it
+        /// meant a fingerprint could move with no scene change at all, which the
+        /// host then reported as an out-of-band edit and refused to roll back on.
+        ///
+        /// The scene's name and path, and each object's scene path, say where
+        /// the document is stored. Saving an untitled scene fills all three in,
+        /// so hashing them made a save look like every object in the scene had
+        /// changed — a save is not an edit, and the journal said otherwise.
+        /// Scene membership is not lost by this: objects are nested under the
+        /// scene they belong to, so moving one between scenes still moves it
+        /// between arrays. All of these stay in the reported state, where they
+        /// are useful, and out of the hash, where they are actively harmful.
         /// </remarks>
         private static JToken HashableState(JObject state)
         {
@@ -46,7 +60,15 @@ namespace Kodaxa.RoboVision.Editor
             var scenes = copy["scenes"] as JArray;
             if (scenes != null)
             {
-                foreach (var scene in scenes.OfType<JObject>()) scene.Remove("dirty");
+                foreach (var scene in scenes.OfType<JObject>())
+                {
+                    scene.Remove("dirty");
+                    scene.Remove("name");
+                    scene.Remove("path");
+                    var objects = scene["objects"] as JArray;
+                    if (objects == null) continue;
+                    foreach (var obj in objects.OfType<JObject>()) obj.Remove("scene");
+                }
             }
             return copy;
         }
@@ -65,7 +87,45 @@ namespace Kodaxa.RoboVision.Editor
         internal static SceneRead CaptureRead()
         {
             var state = CaptureState();
-            return new SceneRead { State = state, Fingerprint = HashToken(HashableState(state)) };
+            return new SceneRead
+            {
+                State = state,
+                Fingerprint = HashToken(HashableState(state)),
+                DocumentSignature = DocumentSignature()
+            };
+        }
+
+        /// <summary>Which world is loaded, independent of what is in it.</summary>
+        /// <remarks>
+        /// Read rather than subscribed to. sceneOpened and the prefab stage
+        /// callbacks are notifications like any other, and the whole point of
+        /// reconciliation is that identity of the loaded world is established by
+        /// looking, not by having been told.
+        ///
+        /// It is the set of loaded scene handles, and deliberately not their
+        /// paths. A handle identifies a loaded instance for the life of the
+        /// session, which is exactly the scope a document incarnation has: an
+        /// unsaved scene has no path at all, and two successive untitled scenes
+        /// would share the empty one. Including the path would also make
+        /// *saving* look like loading a different world — the file the document
+        /// is stored in changed, but nothing was loaded, so the incarnation must
+        /// not rotate. Which file it is belongs in `scene.describe`, not here.
+        /// </remarks>
+        internal static string DocumentSignature()
+        {
+            var stage = UnityEditor.SceneManagement.PrefabStageUtility.GetCurrentPrefabStage();
+            if (stage != null && stage.scene.IsValid())
+                return "prefab:" + stage.scene.handle;
+
+            var parts = new List<string>();
+            for (var i = 0; i < SceneManager.sceneCount; i++)
+            {
+                var scene = SceneManager.GetSceneAt(i);
+                if (!scene.isLoaded) continue;
+                parts.Add(scene.handle.ToString());
+            }
+            parts.Sort(StringComparer.Ordinal);
+            return "scenes:" + String.Join("|", parts);
         }
 
         /// <summary>Object-level created, deleted and changed between two reads.</summary>
@@ -108,6 +168,8 @@ namespace Kodaxa.RoboVision.Editor
             return new JObject
             {
                 ["revision"] = host.Revision,
+                ["bridge"] = host.Bridge,
+                ["document_incarnation"] = host.DocumentIncarnation,
                 ["scenes"] = host.CurrentRead.State["scenes"]
             };
         }
@@ -127,7 +189,50 @@ namespace Kodaxa.RoboVision.Editor
             Snapshots[id] = snapshot;
             SnapshotOrder.Enqueue(id);
             while (SnapshotOrder.Count > 32) Snapshots.Remove(SnapshotOrder.Dequeue());
-            return new JObject { ["snapshot"] = id, ["fingerprint"] = fingerprint, ["state"] = state, ["revision"] = host.Revision };
+            // A full authoritative read is the only thing that may restore
+            // certainty after the host has admitted it lost track.
+            var openedEpoch = host.Journal.AuthoritativeSnapshot();
+            var journal = host.Journal.State();
+            journal["opened_new_epoch"] = openedEpoch;
+            return new JObject
+            {
+                ["snapshot"] = id,
+                ["fingerprint"] = fingerprint,
+                ["state"] = state,
+                ["journal"] = journal,
+                ["revision"] = host.Revision
+            };
+        }
+
+        /// <summary>Cheap incremental history, with its limits reported rather than hidden.</summary>
+        /// <remarks>
+        /// Absent cursor means bootstrap. Present-but-null does not: a client
+        /// that computed a null cursor has lost its position, and answering
+        /// "nothing changed" is the exact failure this call exists to prevent.
+        /// </remarks>
+        private static JObject ChangesSince(RoboVisionHost host, JObject parameters)
+        {
+            foreach (var legacy in new[] { "after", "epoch" })
+            {
+                if (parameters[legacy] != null)
+                    throw new RoboVisionException(
+                        "INVALID_PARAMS",
+                        "changes_since takes a cursor; a bare sequence number cannot say which "
+                        + "document incarnation or certainty epoch it came from, and both restart at 1",
+                        false,
+                        new JObject
+                        {
+                            ["rejected_parameter"] = legacy,
+                            ["current_cursor"] = host.Journal.Cursor()
+                        });
+            }
+
+            var result = parameters.ContainsKey("cursor")
+                ? host.Journal.ChangesSince(parameters["cursor"])
+                : host.Journal.Bootstrap();
+            result["revision"] = host.Revision;
+            result["bridge"] = host.Bridge;
+            return result;
         }
 
         private static JObject Diff(RoboVisionHost host, JObject parameters)

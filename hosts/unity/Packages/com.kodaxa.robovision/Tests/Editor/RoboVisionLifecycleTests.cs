@@ -32,6 +32,9 @@ namespace Kodaxa.RoboVision.Editor.Tests
         private const string ScenePath = Directory + "/Lifecycle.unity";
         private const string SessionKey = "RoboVision.Tests.SessionHandle";
         private const string DurableKey = "RoboVision.Tests.DurableId";
+        private const string BridgeKey = "RoboVision.Tests.Bridge";
+        private const string DocumentKey = "RoboVision.Tests.Document";
+        private const string CursorKey = "RoboVision.Tests.Cursor";
 
         private static Harness NewHarness() => new Harness("lifecycle");
 
@@ -47,8 +50,49 @@ namespace Kodaxa.RoboVision.Editor.Tests
         {
             SessionState.EraseString(SessionKey);
             SessionState.EraseString(DurableKey);
+            SessionState.EraseString(BridgeKey);
+            SessionState.EraseString(DocumentKey);
+            SessionState.EraseString(CursorKey);
             if (AssetDatabase.IsValidFolder(Directory)) AssetDatabase.DeleteAsset(Directory);
             AssetDatabase.Refresh();
+        }
+
+        [UnityTest]
+        public IEnumerator ADomainReloadInvalidatesTheBridgeDocumentAndJournalCursors()
+        {
+            Harness.FreshScene();
+            var before = NewHarness();
+            before.CreateObject("BeforeReload");
+            var described = before.Result("scene.describe");
+            SessionState.SetString(BridgeKey, described.Value<string>("bridge"));
+            SessionState.SetString(DocumentKey, described.Value<string>("document_incarnation"));
+            SessionState.SetString(CursorKey,
+                before.Result("scene.changes_since").Value<string>("cursor"));
+
+            yield return new EnterPlayMode();
+            yield return new ExitPlayMode();
+
+            var staleBridge = SessionState.GetString(BridgeKey, null);
+            var staleDocument = SessionState.GetString(DocumentKey, null);
+            var staleCursor = SessionState.GetString(CursorKey, null);
+            Assert.That(staleCursor, Is.Not.Null.And.Not.Empty, "the test lost its own state across the reload");
+
+            var after = NewHarness();
+            var now = after.Result("scene.describe");
+
+            // Every static in the package died with the domain, so the host that
+            // answers now is not the one that issued any of this.
+            Assert.That(now.Value<string>("bridge"), Is.Not.EqualTo(staleBridge),
+                "a rebuilt bridge reported the previous bridge identity");
+            Assert.That(now.Value<string>("document_incarnation"), Is.Not.EqualTo(staleDocument),
+                "a rebuilt bridge cannot know what the previous one minted and must not claim to");
+
+            // The journal restarted with it, so a position from before is a
+            // position in a world this host never had.
+            var refused = after.Call("scene.changes_since", new JObject { ["cursor"] = staleCursor },
+                ok: false, code: "STALE_DOCUMENT");
+            Assert.That(((JObject)refused["error"]["data"]).Value<string>("current_cursor"),
+                Is.Not.Null.And.Not.Empty, "the refusal did not say where to resume from");
         }
 
         [UnityTest]

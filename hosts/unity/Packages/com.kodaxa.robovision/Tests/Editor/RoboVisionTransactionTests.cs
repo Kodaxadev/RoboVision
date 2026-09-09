@@ -217,9 +217,14 @@ namespace Kodaxa.RoboVision.Editor.Tests
         [Test]
         public void RevisionAdvancesAcrossMutations()
         {
-            var before = _rv.Revision;
+            // Read through a dispatch, not off the host: setup opened a new
+            // scene, and the scene revision resets with the document incarnation,
+            // so a number captured before the host has looked belongs to a world
+            // that is no longer loaded.
+            var before = _rv.Result("scene.describe").Value<long>("revision");
             _rv.CreateObject("Advance");
-            Assert.That(_rv.Revision, Is.GreaterThan(before), "a mutation did not advance the scene revision");
+            Assert.That(_rv.Result("scene.describe").Value<long>("revision"), Is.GreaterThan(before),
+                "a mutation did not advance the scene revision");
         }
     }
 }

@@ -8,6 +8,8 @@ namespace Kodaxa.RoboVision.Editor
     {
         public JObject State;
         public string Fingerprint;
+        /// <summary>Which world this is, independent of what is in it.</summary>
+        public string DocumentSignature;
     }
 
     /// <summary>What one reconciliation established.</summary>
@@ -20,6 +22,8 @@ namespace Kodaxa.RoboVision.Editor
         public JObject Diff;
         public string Source;
         public string Request;
+        /// <summary>A different world is loaded; nothing was diffed across the boundary.</summary>
+        public bool DocumentChanged;
     }
 
     /// <summary>
@@ -36,23 +40,35 @@ namespace Kodaxa.RoboVision.Editor
     /// ObjectChangeEvents publishes undoable changes to loaded objects once per
     /// frame, so it is not comprehensive, and its broad events — ChangeScene
     /// among them — may carry no object information at all. Treating any of that
-    /// as truth would build a journal on a sensor. Notifications mark dirty and
-    /// may offer attribution hints; this decides what actually changed.
+    /// as truth would build a journal on a sensor. Notifications mark dirty; this
+    /// decides what actually changed.
     /// </remarks>
     internal sealed class RoboVisionReconciler
     {
-        internal const string Agent = "agent";
-        internal const string Editor = "editor";
+        internal const string Agent = RoboVisionJournal.SourceAgent;
+        internal const string Editor = RoboVisionJournal.SourceEditor;
 
         private readonly RoboVisionTransactions _transactions;
         private SceneRead _last;
         private bool _dirty = true;
+        private string _documentSignature;
 
         public RoboVisionReconciler(RoboVisionTransactions transactions)
         {
             _transactions = transactions;
+            // The host is a static singleton, so a domain or assembly reload
+            // destroys and rebuilds it. Minting here is therefore exactly the
+            // contract's rule: the bridge identity rotates when the loaded
+            // RoboVision code is replaced, and a client can tell that the code
+            // it was talking to is gone.
+            Bridge = "rvbridge:" + Guid.NewGuid();
+            DocumentIncarnation = "rvdoc:" + Guid.NewGuid();
+            Journal = new RoboVisionJournal(DocumentIncarnation);
         }
 
+        public string Bridge { get; }
+        public string DocumentIncarnation { get; private set; }
+        public RoboVisionJournal Journal { get; }
         public long Revision { get; private set; }
         public bool Dirty => _dirty;
         public SceneRead Current => _last;
@@ -64,6 +80,32 @@ namespace Kodaxa.RoboVision.Editor
         public Reconciliation Reconcile(string source, string request = null, SceneRead baseline = null)
         {
             var current = RoboVisionSceneTools.CaptureRead();
+
+            // Which world is loaded is established by reading it, not by
+            // subscribing to scene-open callbacks. A signature change means the
+            // previous baseline describes something that is no longer open, so
+            // nothing may be diffed across the boundary and the journal restarts.
+            if (_documentSignature != null
+                && !String.Equals(_documentSignature, current.DocumentSignature, StringComparison.Ordinal))
+            {
+                DocumentIncarnation = "rvdoc:" + Guid.NewGuid();
+                Journal.Rebind(DocumentIncarnation, "load");
+                Revision = 0;
+                _last = current;
+                _documentSignature = current.DocumentSignature;
+                _dirty = false;
+                return new Reconciliation
+                {
+                    Read = current,
+                    Moved = false,
+                    Revision = Revision,
+                    Source = source,
+                    Request = request,
+                    DocumentChanged = true
+                };
+            }
+            _documentSignature = current.DocumentSignature;
+
             baseline = baseline ?? _last;
             var known = baseline != null ? baseline.Fingerprint : null;
             var moved = known != null && !String.Equals(known, current.Fingerprint, StringComparison.Ordinal);
@@ -82,15 +124,44 @@ namespace Kodaxa.RoboVision.Editor
             _last = current;
             _dirty = false;
 
+            JObject diff = null;
+            if (moved)
+            {
+                diff = JournalChange(baseline, current, source, request);
+            }
+
             return new Reconciliation
             {
                 Read = current,
                 Moved = moved,
                 Revision = Revision,
-                Diff = moved && baseline != null ? RoboVisionSceneTools.DiffReads(baseline, current) : null,
+                Diff = diff,
                 Source = source,
                 Request = request
             };
+        }
+
+        /// <summary>
+        /// Attribute a change, or admit that it cannot be attributed.
+        /// </summary>
+        /// <remarks>
+        /// With the previous read in hand the diff says exactly which objects
+        /// moved and the journal stays certain. Without it, or when the
+        /// fingerprint moved with nothing object-level to show for it, the host
+        /// genuinely cannot say what changed, and saying so is the only honest
+        /// option — guessing would make the journal worth less than no journal.
+        /// </remarks>
+        private JObject JournalChange(SceneRead baseline, SceneRead current, string source, string request)
+        {
+            if (baseline == null)
+            {
+                Journal.LoseCertainty("the scene changed with no prior read to attribute it against", Revision);
+                return null;
+            }
+            var diff = RoboVisionSceneTools.DiffReads(baseline, current);
+            if (Journal.RecordDiff(diff, Revision, source, request) == 0)
+                Journal.LoseCertainty("the fingerprint moved with no attributable object change", Revision);
+            return diff;
         }
 
         /// <summary>Service a notification if one arrived, and nothing more.</summary>
@@ -112,7 +183,7 @@ namespace Kodaxa.RoboVision.Editor
         /// </remarks>
         public SceneRead Resync() => Reconcile(Editor).Read;
 
-        /// <summary>Take the scene as the agent left it. True if state actually moved.</summary>
+        /// <summary>Take the scene as the agent left it.</summary>
         public Reconciliation AcceptOwnMutation(SceneRead before, string request)
         {
             return Reconcile(Agent, request, before);
@@ -123,21 +194,13 @@ namespace Kodaxa.RoboVision.Editor
         /// </summary>
         /// <remarks>
         /// Nothing net changed, so this is deliberately quiet: no revision, no
-        /// diff. Recovery that <em>failed</em> does not come here — that residue
-        /// is real and belongs to the request that caused it.
+        /// events. Recovery that <em>failed</em> does not come here — that
+        /// residue is real and belongs to the request that caused it.
         /// </remarks>
         public void AcceptRecovered(SceneRead before)
         {
             _last = before;
             _dirty = false;
-        }
-
-        /// <summary>Forget everything scoped to a world that is no longer loaded.</summary>
-        public void Reset()
-        {
-            _last = null;
-            _dirty = true;
-            Revision = 0;
         }
     }
 }

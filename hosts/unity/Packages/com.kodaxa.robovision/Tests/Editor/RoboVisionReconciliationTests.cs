@@ -65,6 +65,7 @@ namespace Kodaxa.RoboVision.Editor.Tests
 
             var expected = new JObject
             {
+                ["scene.changes_since"] = RoboVisionHost.ReadsNotified,
                 ["system.ping"] = RoboVisionHost.ReadsNotified,
                 ["system.hello"] = RoboVisionHost.ReadsNotified,
                 ["system.capabilities"] = RoboVisionHost.ReadsIndependent,

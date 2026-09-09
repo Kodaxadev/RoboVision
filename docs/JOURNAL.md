@@ -127,7 +127,9 @@ Unity had the same three near-identical bodies — `RefreshDirtyState`, `Resync`
 `AcceptOwnMutation` — and they are now one `RoboVisionReconciler` with the same
 steps in the same order: capture an authoritative read, compare the baseline
 fingerprint, advance the revision only if state moved, derive `applied` or
-`noop`, diff old to new, attribute, replace the baseline.
+`noop`, diff old to new, attribute, journal it or lose certainty, replace the
+baseline. The journal, cursors, epochs and refusals are the same contract, so an
+agent driving both editors does not have to learn two histories.
 
 The temptation to do otherwise is stronger in Unity, not weaker.
 `ObjectChangeEvents.changesPublished` looks like a real change feed, but it
@@ -137,6 +139,24 @@ object information at all. Every editor notification therefore funnels into
 `MarkDirty` and no further: notifications say something *may* have changed, and
 reconciliation decides what did. `ObjectChangeEventStream` is sensor input to
 this state machine, never the durable journal.
+
+The same reasoning decides *which world* is loaded. Unity's document incarnation
+is derived from a signature read out of the editor — the set of loaded scene
+handles, or the open Prefab Stage — rather than from `sceneOpened` callbacks,
+because identity established by having been told has the same weakness as change
+detection established by having been told.
+
+The signature is handles, deliberately not paths. A handle identifies a loaded
+instance for the life of a session, which is the scope a document incarnation
+has; an unsaved scene has no path at all, and including the path would make
+*saving* look like loading a different world. Which file the document is stored
+in is reported by `scene.describe`, where it belongs.
+
+Saving is not an edit, and Unity needed that enforced as well as stated: the
+scene's `name` and `path` and every object's `scene` field were inside the hashed
+state, so saving an untitled scene made every object in it look changed. They are
+reported and not hashed now, like `isDirty` before them. Scene membership
+survives the change because objects are nested under the scene they belong to.
 
 ## A command that ran is not a scene that changed
 
