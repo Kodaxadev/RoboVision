@@ -144,6 +144,43 @@ per assembly.
 - with a Prefab Stage open the host described an empty project
 - `viewport.capture` refused an editor whose Scene view had never been focused
 
+### Editor restart and package re-resolution
+
+`tools/unity-restart-gate.sh` launches two headless editors in sequence against
+one generated project. Between them it verifies the first process is gone and
+its port is no longer listening, so a pass cannot be an artifact of the old
+editor lingering. All seven checks pass, and pass again after `PackageCache`,
+`ScriptAssemblies` and `packages-lock.json` are deleted to force a real
+re-resolve: the package resolves, no listener is inherited, `GlobalObjectId`s
+resolve to the same objects, pre-restart session handles return `NOT_FOUND`,
+the fingerprint is byte-identical, the port rebinds, and the shipped Python
+client reconnects to the new process.
+
+### Concurrency policy
+
+Decided rather than accidental, and asserted by six tests:
+
+- optimistic concurrency is per-request — a client passes the revision it
+  planned against and the host refuses if the scene moved, whoever moved it
+- a transaction belongs to the connection that opened it; another connection's
+  mutation is refused with `TRANSACTION_FOREIGN`, while reads stay open
+- if the owner disconnects the transaction is marked orphaned rather than
+  silently committed or discarded, and any client may then finish it
+  deliberately; `system.hello` reports the owner and whether it is gone
+- one connection's malformed or half-sent traffic does not disturb another
+
+### Soak
+
+`tools/unity-soak-gate.sh` keeps one editor and runs every cycle in it, so undo
+stacks, handle tables, caches and the managed heap accumulate. It requests
+script reloads at intervals and resumes in the rebuilt domain, putting the
+reloads inside the soak.
+
+200 cycles with a reload every 50, one process: every cycle restored the
+baseline fingerprint, nothing leaked, the scene root count held, the revision
+stayed monotonic, and no transaction was left active. Mean cycle 13.65ms, p50
+12.29, p95 20.1, max 73.68; mono heap 14.8MB.
+
 ### Not proven
 
 - **SceneView capture.** The five capture tests require a Scene view, which
@@ -151,14 +188,21 @@ per assembly.
   rather than passing vacuously. A windowed run on the development machine
   crashed the Editor through commit-limit exhaustion, so the pixel-correspondence
   assertions have not executed. Compile success is not a substitute.
-- **Editor restart and package reload.** Domain reload is covered by the Play
-  Mode tests above; a full editor restart and a package re-resolve are not.
-  `SessionState`, which the reload tests rely on, does not survive a restart
-  either, so that case needs a different harness.
-- **Unity 6000.0 at runtime.** The declared floor is compile-verified in CI
-  only; every runtime result above is from 6000.6.0f1.
-- **Repeat volume.** Three consecutive runs, not the hundreds the Blender soak
-  gate does.
+- **A client reconnecting over TCP inside a coroutine that spans a domain
+  reload.** Attempted and removed: it fails inside the test framework's own
+  resumption rather than in the host. The stronger claim — the shipped Python
+  client connecting to a brand new editor process — is covered by the restart
+  gate.
+- **Unity 6000.0 at runtime — infrastructure-blocked.** The declared floor is
+  compile-verified in CI only; every runtime result above is from 6000.6.0f1.
+  The development machine cannot host a second editor: `C:` has 0.6 GB free, an
+  installed Unity editor is 19.3 GB, and Unity Hub is not installed. That same
+  full disk is why the pagefile cannot grow, which is what exhausted the commit
+  limit during the one windowed run. Unblocking this needs disk space and a Hub
+  install, or a CI runner with a `UNITY_LICENSE` secret.
+- **Repeat volume at the suite level.** The EditMode suite runs three
+  consecutive times; the soak covers 200 cycles but exercises one cycle shape
+  rather than all 72 tests.
 
 ### Identity contract
 
@@ -170,9 +214,24 @@ per assembly.
 `object.inspect` reports `identity_persistent` so a client never has to infer
 which kind it holds.
 
-Gate 4 is therefore **not passed**. The substrate, identity lifecycle and domain
-reload behaviour are runtime-proven; SceneView capture, editor restart, the
-6000.0 runtime floor and repeat volume are not.
+### Defects this gate found
+
+- a request with no `id` was accepted, because the id was defaulted before the
+  emptiness check ran
+- `if_revision` was validated against a possibly stale revision, and an
+  out-of-band edit during a transaction went unnoticed
+- with a Prefab Stage open the host described an empty project
+- `viewport.capture` refused an editor whose Scene view had never been focused
+- a second client's mutation silently joined a transaction it did not open
+- `scene.isDirty` was inside the hashed state, and Unity flips it
+  asynchronously, so the host reported a change nobody made and refused to roll
+  back with `TRANSACTION_CONTAMINATED`
+- the testbed ran Unity's previously built assembly when the test assembly
+  failed to compile, so results described stale code
+
+Gate 4 is therefore **not passed**. The substrate, identity lifecycle, restart
+and re-resolution, concurrency policy and 200-cycle soak are runtime-proven;
+SceneView capture and the 6000.0 runtime floor are not.
 
 ## Gate 5 — Blender → Unity lineage
 
