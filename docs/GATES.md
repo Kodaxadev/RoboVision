@@ -75,6 +75,26 @@ before the run is unchanged after it.
 
 The Gate 1 baseline fingerprint is identical on both platforms and versions.
 
+### Document and process lifecycle
+
+`tests/blender/lifecycle_document.py` (headless) asserts what each in-process
+boundary owes: saving keeps object ids, mesh revisions and the fingerprint;
+reopening the same document resolves the same objects with the same fingerprint;
+loading a different document mints a new runtime incarnation, resets the scene
+revision, stops the previous document's ids resolving, leaves no stale identity
+owner entries, and abandons an open transaction with `DOCUMENT_CHANGED` instead
+of leaving it pointing at a file that is gone.
+
+`tools/blender-restart-gate.sh` runs two headless Blenders in sequence against
+one document, verifying between them that the first process is gone and its port
+released. The second process resolves the same object ids, reproduces the same
+fingerprint, reports a different runtime incarnation, resets the revision, holds
+no transaction, rebinds the port, and is driven by the shipped Python
+`RoboVisionClient`.
+
+Not yet proven for Blender: add-on disable/enable and re-registration, and
+undo/redo interleaved with a save.
+
 ### Not yet proven at Gate 1
 
 - undo-driven recovery outside Object Mode; the host reports `RECOVERY_UNSAFE`

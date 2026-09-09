@@ -92,6 +92,14 @@ jobs:
           mkdir -p artifacts/blender-lifecycle
           "${BLENDER_DIR}/blender"             --background             --factory-startup             --python-exit-code 1             --python tests/blender/lifecycle_document.py
 
+      - name: Run RoboVision Blender restart gate
+        shell: bash
+        env:
+          BLENDER: ${{ github.workspace }}/.cache/blender/blender-5.2.1-linux-x64/blender
+        run: |
+          set -euo pipefail
+          bash tools/blender-restart-gate.sh
+
       - name: Run RoboVision Gate 1 in interactive Blender
         shell: bash
         run: |

@@ -256,8 +256,11 @@ unproven and is marked so rather than assumed to mirror Unity.
 | domain / add-on reload | keep | keep | **new** | reset | durable only | invalidate | orphan then adopt | reset | drop | drop |
 | editor restart | keep | **new** | **new** | reset | durable only | invalidate | drop | reset | drop | drop |
 
-Unity has evidence for the last two rows. Blender has evidence for none of them,
-which is the next thing to fix.
+Evidence today: Unity covers domain reload, editor restart and package
+re-resolution. Blender covers file save, file reopen, loading a different
+document, and editor restart — `tests/blender/lifecycle_document.py` and
+`tools/blender-restart-gate.sh`. Still unproven for Blender: add-on
+disable/enable and re-registration, and undo/redo interleaved with a save.
 
 ## 13. Security posture
 
