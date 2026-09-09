@@ -44,7 +44,14 @@ def search(params, _runtime):
 def snapshot(params, runtime):
     snap = scene_snapshot(level=resolve_level(params))
     snapshot_id = runtime.store_snapshot(snap)
-    return {"snapshot": snapshot_id, **snap}
+    # A full authoritative read is the only thing that may restore certainty
+    # after the host has admitted it lost track.
+    opened_epoch = runtime.journal.authoritative_snapshot(revision=runtime.revision)
+    return {
+        "snapshot": snapshot_id,
+        "journal": {**runtime.journal.state(), "opened_new_epoch": opened_epoch},
+        **snap,
+    }
 
 
 def diff(params, runtime):
@@ -56,6 +63,17 @@ def diff(params, runtime):
     # report equality it cannot actually support.
     after = scene_snapshot(level=resolve_level(params, default=before.get("level", "deep")))
     return {"from_snapshot": snapshot_id, **diff_snapshots(before, after)}
+
+
+def changes_since(params, runtime):
+    """Cheap incremental history, with its limits reported rather than hidden."""
+    after = params.get("after", 0)
+    epoch = params.get("epoch")
+    result = runtime.journal.changes_since(after, epoch)
+    result["revision"] = runtime.revision
+    result["document_incarnation"] = runtime.document_incarnation
+    result["bridge"] = runtime.bridge
+    return result
 
 
 def raycast(params, _runtime):
@@ -89,4 +107,5 @@ def register(registry) -> None:
     registry.add("scene.search", search, stability="beta")
     registry.add("scene.snapshot", snapshot, stability="beta")
     registry.add("scene.diff", diff, stability="beta")
+    registry.add("scene.changes_since", changes_since, stability="alpha")
     registry.add("scene.raycast", raycast, stability="alpha")

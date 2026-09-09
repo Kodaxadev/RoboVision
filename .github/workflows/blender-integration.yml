@@ -92,6 +92,13 @@ jobs:
           mkdir -p artifacts/blender-lifecycle
           "${BLENDER_DIR}/blender"             --background             --factory-startup             --python-exit-code 1             --python tests/blender/lifecycle_document.py
 
+      - name: Run RoboVision change journal gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-journal
+          "${BLENDER_DIR}/blender"             --background             --factory-startup             --python-exit-code 1             --python tests/blender/journal_gate.py
+
       - name: Run RoboVision Blender restart gate
         shell: bash
         env:

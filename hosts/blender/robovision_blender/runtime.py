@@ -10,8 +10,9 @@ import bpy
 from bpy.app.handlers import persistent
 
 from .identity import forget_identity_owners
+from .journal import AGENT, EDITOR, ChangeJournal
 from .registry import HostError, ToolRegistry
-from .snapshots import DEEP, scene_snapshot
+from .snapshots import DEEP, diff_snapshots, scene_snapshot
 from .transactions import TransactionManager
 from .transport import NonBlockingJsonServer
 
@@ -38,6 +39,7 @@ class RoboVisionRuntime:
         self._snapshots: dict[str, dict[str, Any]] = {}
         self._snapshot_order: deque[str] = deque()
         self._invalidated_snapshots: dict[str, Any] = {}
+        self.journal = ChangeJournal()
         # Two identities, deliberately separate. The bridge is this loaded
         # RoboVision runtime: it rotates when the add-on is reloaded or the
         # bridge restarts, and it does not care which file is open. The document
@@ -133,6 +135,7 @@ class RoboVisionRuntime:
         self._last_snapshot = None
         self._dirty = True
         self._refresh_dirty_state()
+        self.journal.document_opened(document_incarnation=self.document_incarnation)
 
     def remove_handlers(self) -> None:
         _ACTIVE_RUNTIMES.discard(self)
@@ -178,9 +181,32 @@ class RoboVisionRuntime:
             if self.transactions.active is not None:
                 self.transactions.mark_external_change(fingerprint)
             self.revision += 1
+            self._record_external_change(current)
         self._last_fingerprint = fingerprint
         self._last_snapshot = current
         self._dirty = False
+
+    def _record_external_change(self, current: dict[str, Any]) -> None:
+        """Attribute a change the host did not make.
+
+        If the previous snapshot is available the diff says exactly which
+        objects moved and the journal stays certain. If it is not, the host
+        genuinely cannot say what changed, and saying so is the only honest
+        option — guessing would make the journal worth less than no journal.
+        """
+        previous = self._last_snapshot
+        if previous is None:
+            self.journal.lose_certainty("no prior snapshot to attribute the change against",
+                                        revision=self.revision)
+            return
+        try:
+            diff = diff_snapshots(previous, current)
+        except (KeyError, TypeError):
+            self.journal.lose_certainty("the change could not be diffed", revision=self.revision)
+            return
+        if not self.journal.record_diff(diff, revision=self.revision, source=EDITOR):
+            self.journal.lose_certainty("the fingerprint moved with no attributable object change",
+                                        revision=self.revision)
 
     def resync(self) -> dict[str, Any]:
         """Re-read the scene authoritatively before a mutation is allowed to run.
@@ -204,12 +230,22 @@ class RoboVisionRuntime:
         self._dirty = False
         return current
 
-    def _accept_own_mutation(self) -> None:
+    def _accept_own_mutation(self, before: dict[str, Any] | None = None,
+                             request_id: str | None = None) -> None:
         current = scene_snapshot(level=DEEP)
         self._last_fingerprint = current["fingerprint"]
+        previous = before if before is not None else self._last_snapshot
         self._last_snapshot = current
         self._dirty = False
         self.revision += 1
+        if previous is not None:
+            try:
+                diff = diff_snapshots(previous, current)
+            except (KeyError, TypeError):
+                self.journal.lose_certainty("an agent mutation could not be diffed",
+                                            revision=self.revision)
+                return
+            self.journal.record_diff(diff, revision=self.revision, source=AGENT, request=request_id)
 
     def _recover_failed_operation(self, before: dict[str, Any] | None, original: Exception) -> tuple[HostError | None, dict[str, Any] | None]:
         if before is None:
@@ -290,7 +326,7 @@ class RoboVisionRuntime:
             result = spec.handler(params, self)
 
             if spec.mutating and method not in {"transaction.begin", "transaction.commit"}:
-                self._accept_own_mutation()
+                self._accept_own_mutation(before=checkpoint, request_id=request_id)
             elapsed = (time.perf_counter() - started) * 1000.0
             return {
                 "rv": PROTOCOL_VERSION,

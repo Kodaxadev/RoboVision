@@ -104,6 +104,26 @@ claim is not made here. The host now refuses rather than pretending: a rollback
 that would actually need to undo something returns `UNDO_UNAVAILABLE` in
 background, and `transaction.begin` reports `verified_rollback: false` there.
 
+### Change journal (first vertical slice)
+
+`tests/blender/journal_gate.py` (headless) covers the smallest useful journal:
+a monotonic sequence with no gaps or reuse, agent mutations attributed to the
+request that caused them, editor-side changes attributed separately, topology
+changes distinguished from ordinary ones, and re-reading a range returning the
+same answer.
+
+The refusals matter as much as the events. When the host observes a change it
+cannot attribute it emits `RESYNC_REQUIRED` and drops certainty; a later
+perfectly ordinary mutation does **not** restore it, because uncertainty is
+sticky. Only an authoritative `scene.snapshot` opens a new epoch, a cursor from
+the superseded epoch is refused with `EPOCH_SUPERSEDED`, and a cursor older than
+the retention window is refused with `SEQUENCE_TOO_OLD` rather than answered
+with a partial history. Loading a document resets the journal and binds it to
+the new document incarnation.
+
+The journal is a polling optimisation. Nothing that has to be proved uses it:
+transactions still compare deep fingerprints.
+
 ### Not yet proven at Gate 1
 
 - undo-driven recovery outside Object Mode; the host reports `RECOVERY_UNSAFE`
