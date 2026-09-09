@@ -90,14 +90,33 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts/blender-lifecycle
-          "${BLENDER_DIR}/blender"             --background             --factory-startup             --python-exit-code 1             --python tests/blender/lifecycle_document.py
+          "${BLENDER_DIR}/blender" \
+            --background \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/lifecycle_document.py
+
+      - name: Run RoboVision add-on lifecycle gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-addon-lifecycle
+          "${BLENDER_DIR}/blender" \
+            --background \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/lifecycle_addon.py
 
       - name: Run RoboVision change journal gate
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p artifacts/blender-journal
-          "${BLENDER_DIR}/blender"             --background             --factory-startup             --python-exit-code 1             --python tests/blender/journal_gate.py
+          "${BLENDER_DIR}/blender" \
+            --background \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/journal_gate.py
 
       - name: Run RoboVision Blender restart gate
         shell: bash
@@ -158,6 +177,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: blender-5.2.1-robovision-evidence
-          path: artifacts/blender-gate*/
+          path: artifacts/
           if-no-files-found: warn
           retention-days: 14

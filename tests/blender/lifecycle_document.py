@@ -240,14 +240,17 @@ def main() -> None:
     rv2.call("scene.diff", {"from_snapshot": stale_snapshot}, ok=False, code="STALE_DOCUMENT")
 
     # ------------------------------------------- a reattached bridge is a new one
+    # Detach and reattach only. The module stays loaded and every function
+    # object survives, so this says nothing about an add-on disable and
+    # re-enable, which purges and rebuilds the module — that is proven
+    # separately in lifecycle_addon.py.
     previous_bridge = rv2.result("scene.describe")["bridge"]
     rv2.runtime.remove_handlers()
     rv2.runtime.install_handlers()
     reattached = rv2.result("scene.describe")
     expect(
         reattached["bridge"] != previous_bridge,
-        "reattaching the bridge must mint a new bridge identity; this is what "
-        "add-on disable and enable does to the runtime",
+        "reattaching the bridge must mint a new bridge identity",
     )
     expect(
         reattached["document_incarnation"] != round_trip["document_incarnation"],

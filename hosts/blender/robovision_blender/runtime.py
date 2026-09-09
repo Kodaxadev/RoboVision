@@ -1,28 +1,23 @@
 from __future__ import annotations
 
 from collections import deque
-import time
 import traceback
 import uuid
 from typing import Any
 
 import bpy
-from bpy.app.handlers import persistent
 
+from . import handlers
+from .dispatch import dispatch_request, validate_request
 from .identity import forget_identity_owners
 from .journal import AGENT, EDITOR, ChangeJournal
+from .protocol import HOST_VERSION, PROTOCOL_VERSION
 from .registry import HostError, ToolRegistry
 from .snapshots import DEEP, diff_snapshots, scene_snapshot
 from .transactions import TransactionManager
 from .transport import NonBlockingJsonServer
 
-PROTOCOL_VERSION = "1.0"
-HOST_VERSION = "0.1.0"
-
-# Blender handlers are module-level functions, so the notification fans out to
-# every runtime that asked for it. The add-on uses one; an integration harness
-# may build its own instance and must see the same change notifications.
-_ACTIVE_RUNTIMES: "set[RoboVisionRuntime]" = set()
+__all__ = ["HOST_VERSION", "PROTOCOL_VERSION", "RUNTIME", "RoboVisionRuntime"]
 
 
 class RoboVisionRuntime:
@@ -39,7 +34,6 @@ class RoboVisionRuntime:
         self._snapshots: dict[str, dict[str, Any]] = {}
         self._snapshot_order: deque[str] = deque()
         self._invalidated_snapshots: dict[str, Any] = {}
-        self.journal = ChangeJournal()
         # Two identities, deliberately separate. The bridge is this loaded
         # RoboVision runtime: it rotates when the add-on is reloaded or the
         # bridge restarts, and it does not care which file is open. The document
@@ -50,6 +44,7 @@ class RoboVisionRuntime:
         self.bridge = "rvbridge:" + str(uuid.uuid4())
         self.document_incarnation = "rvdoc:" + str(uuid.uuid4())
         self.document: str | None = None
+        self.journal = ChangeJournal(self.document_incarnation)
 
     @property
     def running(self) -> bool:
@@ -72,30 +67,30 @@ class RoboVisionRuntime:
         the same out-of-band change detection the add-on uses without opening a
         socket. A test that skipped this would be checking different code from
         the one shipped.
+
+        Only a genuine (re)attach is a new bridge incarnation. Add-on
+        disable/enable detaches and attaches again, and a client must be able to
+        tell that the code it was talking to has been replaced. Opening a socket
+        on an already attached runtime is not that, so attaching twice is
+        idempotent. The document incarnation rotates with a real reattach
+        because it lives in this bridge's memory, and a reattached bridge cannot
+        know what the previous one minted.
         """
         self.registry_ready()
-        # Only a genuine (re)attach is a new bridge incarnation. Add-on
-        # disable/enable detaches and attaches again, and a client must be able
-        # to tell that the code it was talking to has been replaced. Opening a
-        # socket on an already attached runtime is not that, so attaching twice
-        # must be idempotent. The document incarnation rotates with a real
-        # reattach because it lives in this bridge's memory, and a reattached
-        # bridge cannot know what the previous one minted.
-        if self not in _ACTIVE_RUNTIMES:
+        if handlers.attach(self):
             self.bridge = "rvbridge:" + str(uuid.uuid4())
             self.document_incarnation = "rvdoc:" + str(uuid.uuid4())
-        _ACTIVE_RUNTIMES.add(self)
+            self.journal.rebind(self.document_incarnation, reason="bridge_attached")
+            # Nothing the previous attachment remembered belongs to this
+            # identity, so the baseline is established fresh rather than diffed
+            # against a world that goes by a different name now.
+            self._last_fingerprint = None
+            self._last_snapshot = None
         self.document = bpy.data.filepath or None
-        self._dirty = True
-        self._refresh_dirty_state()
-        if _depsgraph_dirty not in bpy.app.handlers.depsgraph_update_post:
-            bpy.app.handlers.depsgraph_update_post.append(_depsgraph_dirty)
-        if _document_closing not in bpy.app.handlers.load_pre:
-            bpy.app.handlers.load_pre.append(_document_closing)
-        if _document_opened not in bpy.app.handlers.load_post:
-            bpy.app.handlers.load_post.append(_document_opened)
-        if _document_saved not in bpy.app.handlers.save_post:
-            bpy.app.handlers.save_post.append(_document_saved)
+        self.reconcile(source=EDITOR)
+
+    def remove_handlers(self) -> None:
+        handlers.detach(self)
 
     def document_closing(self) -> None:
         """A different document is about to replace this one.
@@ -133,14 +128,8 @@ class RoboVisionRuntime:
         self.revision = 0
         self._last_fingerprint = None
         self._last_snapshot = None
-        self._dirty = True
-        self._refresh_dirty_state()
-        self.journal.document_opened(document_incarnation=self.document_incarnation)
-
-    def remove_handlers(self) -> None:
-        _ACTIVE_RUNTIMES.discard(self)
-        if not _ACTIVE_RUNTIMES and _depsgraph_dirty in bpy.app.handlers.depsgraph_update_post:
-            bpy.app.handlers.depsgraph_update_post.remove(_depsgraph_dirty)
+        self.journal.rebind(self.document_incarnation, reason="load")
+        self.reconcile(source=EDITOR)
 
     def registry_ready(self) -> None:
         if self._registered_tools:
@@ -172,41 +161,78 @@ class RoboVisionRuntime:
             traceback.print_exc()
         return 0.02
 
-    def _refresh_dirty_state(self) -> None:
-        if not self._dirty:
-            return
-        current = scene_snapshot(level=DEEP)
+    # ------------------------------------------------------------ reconciling
+
+    def reconcile(self, *, source: str = EDITOR, request: str | None = None,
+                  baseline: dict[str, Any] | None = None,
+                  current: dict[str, Any] | None = None) -> dict[str, Any]:
+        """The one place that answers "what is the scene now?".
+
+        Dirty refresh, pre-mutation resync, post-mutation acceptance, an
+        authoritative snapshot and failed-mutation recovery all land here. They
+        differ only in what they compare against and who the result is
+        attributed to.
+
+        They used to be three near-identical bodies, and the differences between
+        them were where a missed notification hid: `resync` advanced the scene
+        revision on a fingerprint change but journalled nothing, so an editor
+        edit the host never heard about was absorbed into the next baseline
+        while the journal went on claiming certainty. Everything that moves the
+        baseline goes through here so that cannot happen again.
+        """
+        if current is None:
+            current = scene_snapshot(level=DEEP)
         fingerprint = current["fingerprint"]
-        if self._last_fingerprint is not None and fingerprint != self._last_fingerprint:
-            if self.transactions.active is not None:
+        if baseline is None:
+            baseline = self._last_snapshot
+        known = baseline["fingerprint"] if baseline is not None else self._last_fingerprint
+
+        moved = known is not None and fingerprint != known
+        if moved:
+            if source == EDITOR and self.transactions.active is not None:
                 self.transactions.mark_external_change(fingerprint)
+            # The scene revision names authoritative scene state, not commands
+            # run, so it only advances when that state actually moved.
             self.revision += 1
-            self._record_external_change(current)
+
         self._last_fingerprint = fingerprint
         self._last_snapshot = current
         self._dirty = False
 
-    def _record_external_change(self, current: dict[str, Any]) -> None:
-        """Attribute a change the host did not make.
+        if moved:
+            self._journal_change(baseline, current, source=source, request=request)
+        return {"snapshot": current, "moved": moved, "revision": self.revision}
 
-        If the previous snapshot is available the diff says exactly which
-        objects moved and the journal stays certain. If it is not, the host
-        genuinely cannot say what changed, and saying so is the only honest
-        option — guessing would make the journal worth less than no journal.
+    def _journal_change(self, baseline: dict[str, Any] | None, current: dict[str, Any],
+                        *, source: str, request: str | None) -> None:
+        """Attribute a change, or admit that it cannot be attributed.
+
+        With the previous snapshot in hand the diff says exactly which objects
+        moved and the journal stays certain. Without it the host genuinely
+        cannot say what changed, and saying so is the only honest option —
+        guessing would make the journal worth less than no journal.
         """
-        previous = self._last_snapshot
-        if previous is None:
-            self.journal.lose_certainty("no prior snapshot to attribute the change against",
-                                        revision=self.revision)
+        if baseline is None:
+            self.journal.lose_certainty(
+                "the scene changed with no prior snapshot to attribute it against",
+                revision=self.revision,
+            )
             return
         try:
-            diff = diff_snapshots(previous, current)
+            diff = diff_snapshots(baseline, current)
         except (KeyError, TypeError):
             self.journal.lose_certainty("the change could not be diffed", revision=self.revision)
             return
-        if not self.journal.record_diff(diff, revision=self.revision, source=EDITOR):
-            self.journal.lose_certainty("the fingerprint moved with no attributable object change",
-                                        revision=self.revision)
+        if not self.journal.record_diff(diff, revision=self.revision, source=source, request=request):
+            self.journal.lose_certainty(
+                "the fingerprint moved with no attributable object change",
+                revision=self.revision,
+            )
+
+    def _refresh_dirty_state(self) -> None:
+        if not self._dirty:
+            return
+        self.reconcile(source=EDITOR)
 
     def resync(self) -> dict[str, Any]:
         """Re-read the scene authoritatively before a mutation is allowed to run.
@@ -219,35 +245,19 @@ class RoboVisionRuntime:
         therefore pay for one honest deep read, which also serves as their
         recovery checkpoint.
         """
-        current = scene_snapshot(level=DEEP)
-        fingerprint = current["fingerprint"]
-        if self._last_fingerprint is not None and fingerprint != self._last_fingerprint:
-            if self.transactions.active is not None:
-                self.transactions.mark_external_change(fingerprint)
-            self.revision += 1
-        self._last_fingerprint = fingerprint
-        self._last_snapshot = current
-        self._dirty = False
-        return current
+        return self.reconcile(source=EDITOR)["snapshot"]
 
     def _accept_own_mutation(self, before: dict[str, Any] | None = None,
-                             request_id: str | None = None) -> None:
-        current = scene_snapshot(level=DEEP)
-        self._last_fingerprint = current["fingerprint"]
-        previous = before if before is not None else self._last_snapshot
-        self._last_snapshot = current
-        self._dirty = False
-        self.revision += 1
-        if previous is not None:
-            try:
-                diff = diff_snapshots(previous, current)
-            except (KeyError, TypeError):
-                self.journal.lose_certainty("an agent mutation could not be diffed",
-                                            revision=self.revision)
-                return
-            self.journal.record_diff(diff, revision=self.revision, source=AGENT, request=request_id)
+                             request_id: str | None = None) -> bool:
+        """Take the scene as the agent left it. True if the state actually moved."""
+        return self.reconcile(source=AGENT, request=request_id, baseline=before)["moved"]
 
-    def _recover_failed_operation(self, before: dict[str, Any] | None, original: Exception) -> tuple[HostError | None, dict[str, Any] | None]:
+    def _recover_failed_operation(
+        self,
+        before: dict[str, Any] | None,
+        original: Exception,
+        request_id: str | None = None,
+    ) -> tuple[HostError | None, dict[str, Any] | None]:
         if before is None:
             return None, None
         try:
@@ -257,7 +267,17 @@ class RoboVisionRuntime:
             self._dirty = False
             return None, recovery
         except HostError as recovery_error:
-            self._dirty = True
+            # The mutation left something behind that could not be undone. That
+            # residue is ours, so it is reconciled and attributed to the request
+            # that caused it, rather than left for the next dirty refresh to
+            # blame on a human edit.
+            try:
+                self.reconcile(source=AGENT, request=request_id, baseline=before)
+            except Exception:
+                self._dirty = True
+                self.journal.lose_certainty(
+                    "a failed mutation could not be reconciled", revision=self.revision
+                )
             original_payload: dict[str, Any] = {
                 "type": type(original).__name__,
                 "message": str(original),
@@ -271,6 +291,8 @@ class RoboVisionRuntime:
                 "original_error": original_payload,
             }
             return recovery_error, None
+
+    # ------------------------------------------------------------- snapshots
 
     def store_snapshot(self, snapshot: dict[str, Any]) -> str:
         snapshot_id = "snap:" + str(uuid.uuid4())
@@ -294,144 +316,13 @@ class RoboVisionRuntime:
                 ) from exc
             raise HostError("NOT_FOUND", f"snapshot not found: {snapshot_id}") from exc
 
+    # ---------------------------------------------------------------- protocol
+
     def dispatch(self, raw: dict[str, Any]) -> dict[str, Any]:
-        started = time.perf_counter()
-        request_id = raw.get("id") if isinstance(raw.get("id"), str) else "invalid"
-        mutation_before: dict[str, Any] | None = None
-        try:
-            self._refresh_dirty_state()
-            method, params, if_revision = self._validate_request(raw)
-            spec = self.registry.get(method)
-            if spec.requires_ui and bpy.app.background:
-                raise HostError("INVALID_CONTEXT", f"{method} requires an interactive Blender UI")
-
-            is_transaction_control = method.startswith("transaction.")
-            checkpoint: dict[str, Any] | None = None
-            if spec.mutating:
-                # Establish the truth first: the concurrency check below is only
-                # meaningful against a revision that reflects the scene as it is
-                # right now, not as the last notification left it.
-                checkpoint = self.resync()
-            if spec.mutating and if_revision is not None and if_revision != self.revision:
-                raise HostError(
-                    "STALE_REVISION",
-                    "scene revision changed",
-                    data={"expected": if_revision, "actual": self.revision},
-                    retryable=True,
-                )
-
-            if checkpoint is not None and not is_transaction_control:
-                mutation_before = self.transactions.prepare_mutation(method, checkpoint)
-
-            result = spec.handler(params, self)
-
-            if spec.mutating and method not in {"transaction.begin", "transaction.commit"}:
-                self._accept_own_mutation(before=checkpoint, request_id=request_id)
-            elapsed = (time.perf_counter() - started) * 1000.0
-            return {
-                "rv": PROTOCOL_VERSION,
-                "id": request_id,
-                "ok": True,
-                "revision": self.revision,
-                "result": result,
-                "timing_ms": round(elapsed, 3),
-            }
-        except HostError as exc:
-            recovery_error, recovery = self._recover_failed_operation(mutation_before, exc)
-            if recovery_error is not None:
-                exc = recovery_error
-            elapsed = (time.perf_counter() - started) * 1000.0
-            data = exc.data
-            if recovery is not None:
-                data = {"operation_error_data": exc.data, "automatic_recovery": recovery}
-            error: dict[str, Any] = {"code": exc.code, "message": str(exc), "retryable": exc.retryable}
-            if data is not None:
-                error["data"] = data
-            return {
-                "rv": PROTOCOL_VERSION,
-                "id": request_id,
-                "ok": False,
-                "revision": self.revision,
-                "error": error,
-                "timing_ms": round(elapsed, 3),
-            }
-        except Exception as exc:
-            recovery_error, recovery = self._recover_failed_operation(mutation_before, exc)
-            if recovery_error is not None:
-                elapsed = (time.perf_counter() - started) * 1000.0
-                error: dict[str, Any] = {
-                    "code": recovery_error.code,
-                    "message": str(recovery_error),
-                    "retryable": recovery_error.retryable,
-                }
-                if recovery_error.data is not None:
-                    error["data"] = recovery_error.data
-                return {
-                    "rv": PROTOCOL_VERSION,
-                    "id": request_id,
-                    "ok": False,
-                    "revision": self.revision,
-                    "error": error,
-                    "timing_ms": round(elapsed, 3),
-                }
-            traceback.print_exc()
-            elapsed = (time.perf_counter() - started) * 1000.0
-            error_data = {"automatic_recovery": recovery} if recovery is not None else None
-            response: dict[str, Any] = {
-                "rv": PROTOCOL_VERSION,
-                "id": request_id,
-                "ok": False,
-                "revision": self.revision,
-                "error": {
-                    "code": "HOST_EXCEPTION",
-                    "message": f"{type(exc).__name__}: host operation failed; see Blender console for traceback",
-                    "retryable": False,
-                },
-                "timing_ms": round(elapsed, 3),
-            }
-            if error_data is not None:
-                response["error"]["data"] = error_data
-            return response
+        return dispatch_request(self, raw)
 
     def _validate_request(self, raw: dict[str, Any]) -> tuple[str, dict[str, Any], int | None]:
-        if raw.get("rv") != PROTOCOL_VERSION:
-            raise HostError("PROTOCOL_MISMATCH", f"expected protocol {PROTOCOL_VERSION}")
-        if not isinstance(raw.get("id"), str) or not raw["id"]:
-            raise HostError("INVALID_REQUEST", "id must be a non-empty string")
-        method = raw.get("method")
-        if not isinstance(method, str) or not method:
-            raise HostError("INVALID_REQUEST", "method must be a non-empty string")
-        params = raw.get("params", {})
-        if not isinstance(params, dict):
-            raise HostError("INVALID_REQUEST", "params must be an object")
-        if_revision = raw.get("if_revision")
-        if if_revision is not None and (not isinstance(if_revision, int) or isinstance(if_revision, bool) or if_revision < 0):
-            raise HostError("INVALID_REQUEST", "if_revision must be a non-negative integer")
-        return method, params, if_revision
+        return validate_request(raw)
 
 
 RUNTIME = RoboVisionRuntime()
-
-
-@persistent
-def _depsgraph_dirty(_scene=None, _depsgraph=None) -> None:
-    for runtime in tuple(_ACTIVE_RUNTIMES):
-        runtime.mark_dirty()
-
-
-@persistent
-def _document_closing(_file=None, _other=None) -> None:
-    for runtime in tuple(_ACTIVE_RUNTIMES):
-        runtime.document_closing()
-
-
-@persistent
-def _document_opened(_file=None, _other=None) -> None:
-    for runtime in tuple(_ACTIVE_RUNTIMES):
-        runtime.document_opened()
-
-
-@persistent
-def _document_saved(_file=None, _other=None) -> None:
-    for runtime in tuple(_ACTIVE_RUNTIMES):
-        runtime.document_saved()

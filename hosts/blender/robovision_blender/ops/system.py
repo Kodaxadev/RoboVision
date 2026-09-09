@@ -3,7 +3,7 @@ from __future__ import annotations
 import bpy
 
 from ..registry import HostError
-from ..runtime import HOST_VERSION, PROTOCOL_VERSION
+from ..protocol import HOST_VERSION, PROTOCOL_VERSION
 
 
 def ping(_params, runtime):

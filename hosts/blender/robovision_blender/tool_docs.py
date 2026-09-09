@@ -79,6 +79,12 @@ METHOD_DOCS: dict[str, dict[str, Any]] = {
         ("scene", "inspect", "history"),
         _object({"from_snapshot": STRING, "deep": BOOLEAN}, ("from_snapshot",)),
     ),
+    "scene.changes_since": _entry(
+        "List journal events after a cursor this host issued; omit the cursor to bootstrap "
+        "a position without claiming any history.",
+        ("scene", "inspect", "history"),
+        _object({"cursor": STRING}),
+    ),
     "scene.raycast": _entry(
         "Raycast evaluated scene geometry in world space and return hit object/face/location/normal.",
         ("scene", "spatial", "query"),

@@ -5,7 +5,7 @@ import bpy
 
 from ..identity import normalize_object_ids, object_id
 from ..registry import HostError
-from ..snapshots import diff_snapshots, object_snapshot, resolve_level, scene_snapshot
+from ..snapshots import DEEP, diff_snapshots, object_snapshot, resolve_level, scene_snapshot
 
 
 def describe(params, runtime):
@@ -42,7 +42,14 @@ def search(params, _runtime):
 
 
 def snapshot(params, runtime):
-    snap = scene_snapshot(level=resolve_level(params))
+    level = resolve_level(params)
+    # An authoritative read is exactly that, so it reconciles first: anything
+    # the host had missed is attributed and journalled before this call claims
+    # to be a baseline. Reconciliation always reads deep, because the baseline
+    # every later comparison is made against has to be the strongest one
+    # available, whatever level the caller asked to see.
+    reconciled = runtime.reconcile()
+    snap = reconciled["snapshot"] if level == DEEP else scene_snapshot(level=level)
     snapshot_id = runtime.store_snapshot(snap)
     # A full authoritative read is the only thing that may restore certainty
     # after the host has admitted it lost track.
@@ -66,12 +73,23 @@ def diff(params, runtime):
 
 
 def changes_since(params, runtime):
-    """Cheap incremental history, with its limits reported rather than hidden."""
-    after = params.get("after", 0)
-    epoch = params.get("epoch")
-    result = runtime.journal.changes_since(after, epoch)
+    """Cheap incremental history, with its limits reported rather than hidden.
+
+    Called without a cursor this is a bootstrap: it reports where the journal is
+    and returns no events. Every other call must present a cursor this host
+    issued, which names the document and the certainty epoch it belongs to.
+    """
+    for legacy in ("after", "epoch"):
+        if legacy in params:
+            raise HostError(
+                "INVALID_PARAMS",
+                "changes_since takes a cursor; a bare sequence number cannot say which "
+                "document incarnation or certainty epoch it came from, and both restart "
+                "at 1",
+                data={"rejected_parameter": legacy, "current_cursor": runtime.journal.cursor()},
+            )
+    result = runtime.journal.changes_since(params.get("cursor"))
     result["revision"] = runtime.revision
-    result["document_incarnation"] = runtime.document_incarnation
     result["bridge"] = runtime.bridge
     return result
 

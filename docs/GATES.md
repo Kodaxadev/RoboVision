@@ -80,7 +80,7 @@ The Gate 1 baseline fingerprint is identical on both platforms and versions.
 `tests/blender/lifecycle_document.py` (headless) asserts what each in-process
 boundary owes: saving keeps object ids, mesh revisions and the fingerprint;
 reopening the same document resolves the same objects with the same fingerprint;
-loading a different document mints a new runtime incarnation, resets the scene
+loading a different document mints a new document incarnation, resets the scene
 revision, stops the previous document's ids resolving, leaves no stale identity
 owner entries, and abandons an open transaction with `DOCUMENT_CHANGED` instead
 of leaving it pointing at a file that is gone.
@@ -88,15 +88,17 @@ of leaving it pointing at a file that is gone.
 `tools/blender-restart-gate.sh` runs two headless Blenders in sequence against
 one document, verifying between them that the first process is gone and its port
 released. The second process resolves the same object ids, reproduces the same
-fingerprint, reports a different runtime incarnation, resets the revision, holds
+fingerprint, reports a different bridge and document incarnation, resets the
+revision, holds
 no transaction, rebinds the port, and is driven by the shipped Python
 `RoboVisionClient`.
 
 The gauntlet also covers unsaved-to-saved, Save As, three consecutive reopens of
 one document, an A to B to A round trip, a snapshot handle from a closed document
-incarnation failing with `STALE_DOCUMENT`, and reattaching the bridge — which is
-what add-on disable and enable does to the runtime — minting a new bridge and a
-new document incarnation.
+incarnation failing with `STALE_DOCUMENT`, and reattaching the bridge, which
+mints a new bridge and a new document incarnation. Detaching and reattaching a
+live runtime is only that; the add-on lifecycle it resembles is proven
+separately below.
 
 Not proven for Blender: undo and redo interleaved with a save. Blender's undo
 does not restore state in background mode, and this gauntlet is headless, so the
@@ -104,25 +106,59 @@ claim is not made here. The host now refuses rather than pretending: a rollback
 that would actually need to undo something returns `UNDO_UNAVAILABLE` in
 background, and `transaction.begin` reports `verified_rollback: false` there.
 
-### Change journal (first vertical slice)
+### Change journal
 
-`tests/blender/journal_gate.py` (headless) covers the smallest useful journal:
-a monotonic sequence with no gaps or reuse, agent mutations attributed to the
-request that caused them, editor-side changes attributed separately, topology
+`tests/blender/journal_gate.py` (headless) runs fourteen scenarios in two
+modules: `journal_events.py` for what the host reports and who it blames,
+`journal_cursors.py` for what a client's position is allowed to mean.
+
+Events: a monotonic sequence with no gaps or reuse, agent mutations attributed to
+the request that caused them, editor-side changes attributed separately, topology
 changes distinguished from ordinary ones, and re-reading a range returning the
 same answer.
 
-The refusals matter as much as the events. When the host observes a change it
-cannot attribute it emits `RESYNC_REQUIRED` and drops certainty; a later
-perfectly ordinary mutation does **not** restore it, because uncertainty is
-sticky. Only an authoritative `scene.snapshot` opens a new epoch, a cursor from
-the superseded epoch is refused with `EPOCH_SUPERSEDED`, and a cursor older than
-the retention window is refused with `SEQUENCE_TOO_OLD` rather than answered
-with a partial history. Loading a document resets the journal and binds it to
-the new document incarnation.
+The refusals matter as much as the events, because an empty event list reads as
+"nothing changed":
+
+- an edit whose notification never arrived, discovered at the next mutation's
+  resync, is journalled with editor attribution — it used to be absorbed into the
+  new baseline while the journal claimed certainty, and the client saw the
+  revision advance twice for one event
+- an authoritative `scene.snapshot` rebuilds the baseline even when the host
+  believed itself certain and its dirty flag was clear
+- a change the host can see but cannot attribute drops certainty, and a later
+  perfectly ordinary mutation does **not** restore it; only an authoritative
+  snapshot opens a new epoch
+- a cursor from a superseded epoch is refused with `EPOCH_SUPERSEDED`, one from a
+  replaced document with `STALE_DOCUMENT` — asserted with both sides at epoch 1,
+  since epoch numbers collide across documents and the case is otherwise proven
+  by accident — one past the retention window with `SEQUENCE_TOO_OLD`, and one
+  ahead of the journal, malformed, or using the old bare `after` parameter with
+  `INVALID_PARAMS`
+- a successful mutation that changes nothing reports `outcome: noop`, leaves the
+  scene revision alone and writes no events; three shapes of it are covered —
+  a transform to the current location, a modifier setting written to the value it
+  already holds, and clearing a parent that was never set
 
 The journal is a polling optimisation. Nothing that has to be proved uses it:
 transactions still compare deep fingerprints.
+
+### Bridge and add-on lifecycle
+
+`tests/blender/lifecycle_addon.py` (headless) separates three events that were
+being conflated. Detach and reattach on a live runtime rotates the bridge and
+document incarnation, invalidates cursors from before it, and leaves exactly one
+set of callbacks registered across repeated cycles.
+
+A genuine add-on lifecycle is a stronger claim and is now made: enable, install
+handlers, `addon_utils.disable` — which runs the shipped `unregister` — then a
+module purge and re-enable, with the reloaded module verified to be a different
+object. Before this gate existed, that cycle left `load_pre` at 3, `load_post` at
+4 and `save_post` at 2: `remove_handlers()` removed only the depsgraph handler,
+and the `@persistent` load and save callbacks accumulated one dead entry per
+cycle, each holding its whole module alive. Callbacks now carry the token of the
+load that registered them, so a load whose `unregister` never ran is swept — and
+the gate asserts the sweep leaves another add-on's handlers untouched.
 
 ### Not yet proven at Gate 1
 

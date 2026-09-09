@@ -53,6 +53,10 @@ class Response:
     error: ErrorPayload | None = None
     warnings: list[str] = field(default_factory=list)
     timing_ms: float | None = None
+    # `applied` or `noop` on a mutating call: whether the scene actually moved.
+    # A successful command that changed nothing is not a change, and the scene
+    # revision does not advance for it.
+    outcome: str | None = None
     rv: str = PROTOCOL_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -65,4 +69,6 @@ class Response:
             out["warnings"] = self.warnings
         if self.timing_ms is not None:
             out["timing_ms"] = round(self.timing_ms, 3)
+        if self.outcome is not None:
+            out["outcome"] = self.outcome
         return out

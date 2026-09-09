@@ -188,25 +188,11 @@ authoritatively before it is allowed to run.
 
 ## 6. The journal, and sticky uncertainty
 
-```text
-scene.changes_since(sequence) -> { sequence, revision, epoch, events[], certain }
-```
-
-Events carry a monotonic `sequence`, the `revision` they produced, a `type`,
-affected **stable ids** (never names), a `path` where known, a `source`
-(`agent` with its request id, `editor`, or `unknown`), and a timestamp.
-
-Both editors under-report. `bpy.msgbus` does not fire for a viewport drag;
-`ObjectChangeEventStream` is a per-frame view a batch operation can outrun. So
-certainty is tracked as an **epoch**:
-
-- the journal carries `epoch`, incremented only by an authoritative snapshot
-- when the host cannot attribute a change, it emits `RESYNC_REQUIRED` and clears
-  certainty for the current epoch
-- **once cleared, certainty is sticky.** A later clean-looking notification does
-  not restore trust. Only an authoritative snapshot opens a new epoch
-- `changes_since` with a sequence from a superseded epoch returns
-  `EPOCH_SUPERSEDED`; with a discarded sequence, `SEQUENCE_TOO_OLD`
+An agent polls `scene.changes_since(cursor)` rather than re-reading the scene.
+Cursors name the document incarnation and certainty epoch they were issued in,
+losing certainty is sticky, one reconciliation path attributes every change, and
+scene revision tracks state rather than commands run. The full contract is in
+[JOURNAL.md](JOURNAL.md).
 
 The journal is a performance optimization for polling. It never substitutes for a
 fingerprint in a proof, and transactions keep comparing deep fingerprints.
@@ -222,7 +208,7 @@ Every mutating request may carry `idempotency_key`. The host keeps a record per
 | --- | --- |
 | duplicate while the first is still executing | `IN_PROGRESS`, retryable, no second execution |
 | duplicate after completion | the original response, replayed verbatim, flagged `replayed: true` |
-| duplicate after a runtime incarnation change | `INDETERMINATE` — the host cannot prove what happened; the agent must re-observe |
+| duplicate after a bridge incarnation change | `INDETERMINATE` — the host cannot prove what happened; the agent must re-observe |
 | duplicate inside a transaction | scoped to that transaction and discarded with it |
 | timeout with unknown status | the client retries with the same key and gets one of the above, never a silent second apply |
 
@@ -333,10 +319,12 @@ Evidence today. Blender: save, reopen, load-other and process restart are
 asserted by `tests/blender/lifecycle_document.py` and
 `tools/blender-restart-gate.sh`. Unity: domain reload, editor restart and package
 re-resolution are asserted by the EditMode suite and
-`tools/unity-restart-gate.sh`. Unproven and marked so rather than assumed:
-Blender add-on disable/enable and reload, Save As, undo/redo interleaved with a
-save, and every row's journal, idempotency and observation column, none of which
-exist yet.
+`tools/unity-restart-gate.sh`. Blender add-on
+disable, reload and re-enable are asserted by `tests/blender/lifecycle_addon.py`,
+which is a stronger claim than detach/reattach: the module is purged and rebuilt,
+so every callback is a new object. Unproven and marked so rather than assumed:
+undo/redo interleaved with a save, and every row's idempotency and observation
+column, neither of which exists yet.
 
 ## 13. Security posture
 

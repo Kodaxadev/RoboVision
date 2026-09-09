@@ -10,10 +10,16 @@ The host transport is newline-delimited UTF-8 JSON over loopback TCP by default.
 
 `if_revision` is optional for reads and strongly recommended for mutations.
 
+A mutating response carries `outcome`: `applied` when the scene fingerprint
+moved, `noop` when the command succeeded and left the state exactly as it found
+it. `revision` advances only for `applied`, because it names authoritative scene
+state rather than commands executed — a `noop` writes no journal events either,
+and the two must never disagree about whether anything happened.
+
 ## Success
 
 ```json
-{"rv":"1.0","id":"uuid","ok":true,"revision":42,"result":{},"timing_ms":1.72}
+{"rv":"1.0","id":"uuid","ok":true,"revision":42,"outcome":"applied","result":{},"timing_ms":1.72}
 ```
 
 ## Failure

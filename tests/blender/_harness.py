@@ -6,6 +6,7 @@ through `dispatch` with protocol-shaped requests.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import sys
@@ -18,6 +19,7 @@ HOST_ROOT = ROOT / "hosts" / "blender"
 if str(HOST_ROOT) not in sys.path:
     sys.path.insert(0, str(HOST_ROOT))
 
+from robovision_blender import handlers as blender_handlers  # noqa: E402
 from robovision_blender.runtime import PROTOCOL_VERSION, RoboVisionRuntime  # noqa: E402
 
 
@@ -42,6 +44,35 @@ def clean_scene() -> None:
     for mesh in list(bpy.data.meshes):
         if mesh.users == 0:
             bpy.data.meshes.remove(mesh)
+
+
+@contextmanager
+def missed_notification():
+    """Edit the scene without the host ever being told.
+
+    Not a synthetic hazard. Blender fires `depsgraph_update_post` only when
+    something forces evaluation, so a script that writes a datablock and does
+    not update leaves the host with a clean dirty flag over a stale baseline —
+    measured directly: a bare `location.x = ...` left `_dirty` False until a
+    `view_layer.update()` followed it.
+
+    Detaching the callback reproduces that deterministically without reaching
+    into the host's private state to fake the symptom, which would prove only
+    that the test can lie to the host.
+    """
+    handler = blender_handlers._depsgraph_dirty
+    installed = bpy.app.handlers.depsgraph_update_post
+    present = handler in installed
+    if present:
+        installed.remove(handler)
+    try:
+        yield
+    finally:
+        # Evaluate while still detached, so the scene really is in its new state
+        # and the host still has not heard about it.
+        bpy.context.view_layer.update()
+        if present and handler not in installed:
+            installed.append(handler)
 
 
 class Host:
@@ -99,6 +130,15 @@ class Host:
             ),
             encoding="utf-8",
         )
+
+
+def events_of(response: dict, event_type: str) -> list[dict]:
+    return [event for event in response["events"] if event["type"] == event_type]
+
+
+def cursor_of(rv: "Host") -> str:
+    """Where the journal is now, read the way a client reads it."""
+    return rv.result("scene.changes_since")["cursor"]
 
 
 def artifact_dir(name: str) -> Path:
