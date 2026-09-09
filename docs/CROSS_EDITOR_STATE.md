@@ -32,32 +32,84 @@ fault (§6), not silence.
 
 ## 1. Identity is layered, not one id
 
-Collapsing lifecycle into a single `host_id` loses exactly the distinctions that
-make stale state detectable. Seven levels, each with its own invalidation rule:
+Collapsing lifecycle into one id loses exactly the distinctions that make stale
+state detectable. Eight levels. Two of them were previously conflated under
+"runtime incarnation", which hid the difference between *the bridge was
+reloaded* and *a different file is open*; they are separate now.
 
-| level | identifier | changes when | survives |
+| level | identifier | rotates when | notes |
 | --- | --- | --- | --- |
-| workspace / document | `rvws:<uuid>` | a different project or `.blend` is opened | process restart, reinstall |
-| host process | `rvproc:<uuid>` | the editor process restarts | domain reload |
-| runtime incarnation | `rvrt:<uuid>` | domain reload, assembly reload, add-on re-enable, bridge restart | nothing below it |
-| scene revision | `int`, monotonic | authoritative scene state changes | within an incarnation |
-| object identity | `b3d:<uuid>` / `unity:GlobalObjectId_*` | never, for saved objects | restart (asserted) |
-| mesh revision | `int`, monotonic | editable mesh topology changes | within a document |
-| observation | `rvobs:<uuid>` | every capture | referenced, never re-derived |
+| workspace | `rvws:<uuid>` | a different RoboVision project context is adopted | the larger context a set of documents belongs to |
+| document | `rvdocid:<uuid>` | a genuinely different document is authored | persisted inside the file; see §1.1 |
+| host process | `rvproc:<uuid>` | the editor process starts | minted per process, never persisted |
+| bridge incarnation | `rvbridge:<uuid>` | add-on disable/enable, add-on reload, Unity domain or assembly reload, bridge restart | the loaded RoboVision runtime itself |
+| document incarnation | `rvdoc:<uuid>` | a document is opened, reopened or replaced | one loaded state universe, even if the bridge never reloaded |
+| scene revision | `int`, monotonic | authoritative scene state changes | resets with the document incarnation |
+| object identity | `b3d:<uuid>` / `unity:GlobalObjectId_*` | never, for saved objects | survives restart (asserted) |
+| mesh revision | `int`, monotonic | editable mesh topology changes | stored with the mesh, survives save |
+| observation | `rvobs:<uuid>` | every capture | bound to the document incarnation it was taken in |
 
-`rvws` is persisted **in the document** (a Blender scene custom property, a Unity
-`ProjectSettings` asset), not derived from a filesystem path, so renaming or
-moving a project does not silently create a new workspace. If the stored id is
-missing it is minted and written on first contact; if a document is copied, the
-duplicate is detected the same way duplicate object ids already are.
+The two that were conflated:
 
-The system can then answer: *this decision came from observation O of mesh
-revision M, scene revision S, runtime R, process P, workspace W.* Stale state has
-nowhere to hide.
+- **bridge incarnation** answers *is the code I am talking to the same code?*
+  Reloading the add-on rotates it while the open file is untouched.
+- **document incarnation** answers *is this the same loaded world?* Opening a
+  file rotates it while the bridge keeps running, its sockets stay bound and its
+  Python module state survives.
 
-**Owed errors.** `STALE_RUNTIME` when a request carries an `rvrt` that is no
-longer current. `WRONG_WORKSPACE` when it names an `rvws` this host does not
-serve. Both are distinct from `NOT_FOUND`.
+They rotate independently, and an agent needs both: a handle from before an
+add-on reload is void for a different reason than a handle from before a file
+load, and conflating them makes one of those errors unreportable.
+
+The system can then answer: *this decision came from observation O, in document
+incarnation D of document W, at scene revision S and mesh revision M, through
+bridge B in process P.*
+
+**Owed errors.** `STALE_BRIDGE` when a request carries an `rvbridge` that is no
+longer loaded. `STALE_DOCUMENT` when it carries an `rvdoc` that is no longer the
+open world. `WRONG_DOCUMENT` when it names a document this host does not have
+open. All distinct from `NOT_FOUND`, which means the object is missing from a
+world that *is* current.
+
+## 1.1 Document identity, copies and forks
+
+**Not yet implemented, and deliberately conservative.** Persisting an id inside a
+file means copies of the file carry copies of the id, so the design has to say
+what happens before anything is persisted.
+
+The document record stored in the file is `{ document_id, last_known_path }`.
+Path is recorded not as identity but as evidence for the fork check below.
+
+| event | document id | why |
+| --- | --- | --- |
+| Save (same path) | preserved | the same document, written again |
+| Save As (new path) | **new id minted**, previous recorded as `forked_from` | the original file still exists on disk and is still that document; two live files must not share one identity |
+| Save a Copy | in-memory document keeps its id; the copy on disk carries a duplicate until opened | unavoidable — nothing runs at copy time |
+| filesystem copy, rename or move | undetectable at copy time | resolved on open, below |
+| open, `last_known_path` equals the file's path | preserved | the ordinary case |
+| open, `last_known_path` differs | **new id minted**, previous recorded as `forked_from`, host reports `document_forked` | a move and a copy are indistinguishable from the file alone, so the safe reading is "a different document" |
+
+A move therefore costs a new id by default. That is the conservative direction:
+wrongly minting a new id makes a client re-observe, while wrongly sharing one
+makes two files silently the same document. A client that knows a move happened
+can say so explicitly:
+
+```text
+document.claim_identity(previous_document_id) -> ok | CLAIM_REFUSED
+```
+
+**Concurrent open of two files carrying the same id** is not solved by anything
+in the file. Two editor processes can each open a copy and both believe they are
+that document. Detection requires coordination outside the documents — a
+lock or registry entry keyed by `document_id` that a host takes on open and
+releases on close, so the second host sees the id already claimed and reports
+`DOCUMENT_ID_IN_USE` with the holder's process identity.
+
+Explicitly **not claimed**: that a copied `.blend` can be detected by the
+existing object duplicate-id repair. That mechanism repairs collisions *within
+one open file* and says nothing about two files on disk. Any copy detection
+adopted here must be proven by its own test before it is claimed, and the
+path-mismatch rule above is the only mechanism currently proposed.
 
 ## 2. Addressing a host
 
@@ -244,23 +296,41 @@ regression fixture, which is what the Blender and Unity gates already do by hand
 
 ## 12. Lifecycle invalidation
 
-What survives each boundary. Unity's column is evidence; Blender's is largely
-unproven and is marked so rather than assumed to mirror Unity.
+`keep` survives, `new` rotates, `reset` restarts from its initial value, `drop`
+is discarded, `invalidate` means existing handles must now fail rather than
+resolve.
 
-| boundary | workspace | process | runtime | scene rev | object id | mesh handle | transaction | journal seq | idempotency | observation |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| in-session edit | keep | keep | keep | bump | keep | revision-scoped | keep | continue | keep | keep |
-| undo / redo | keep | keep | keep | bump | keep | invalidate | contaminate | continue, `uncertain` | keep | keep |
-| file save | keep | keep | keep | keep | keep (may upgrade) | keep | keep | continue | keep | keep |
-| file reopen / load other | keep or change | keep | **new** | reset | durable only | invalidate | abort | reset | drop | drop |
-| domain / add-on reload | keep | keep | **new** | reset | durable only | invalidate | orphan then adopt | reset | drop | drop |
-| editor restart | keep | **new** | **new** | reset | durable only | invalidate | drop | reset | drop | drop |
+| boundary | workspace | document id | process | bridge | document incarnation | scene rev | object id | mesh rev | mesh handle | transaction | journal seq | idempotency | observation |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| in-session edit | keep | keep | keep | keep | keep | bump | keep | bump on topology | revision-scoped | keep | continue | keep | keep |
+| undo / redo | keep | keep | keep | keep | keep | bump | keep | bump | invalidate | contaminate | continue, uncertain | keep | keep |
+| save (same path) | keep | keep | keep | keep | keep | keep | keep | keep | keep | keep | continue | keep | keep |
+| Save As | keep | **new** (§1.1) | keep | keep | keep | keep | keep | keep | keep | keep | continue | keep | keep |
+| reopen same document | keep | keep | keep | keep | **new** | reset | keep | keep | invalidate | abandon | reset | drop | drop |
+| load a different document | keep | keep (that file's own) | keep | keep | **new** | reset | durable only | that file's own | invalidate | abandon | reset | drop | drop |
+| add-on disable/enable or reload | keep | keep | keep | **new** | **new** | reset | keep | keep | invalidate | drop | reset | drop | drop |
+| Unity domain / assembly reload | keep | keep | keep | **new** | keep | reset | keep | keep | invalidate | orphan, then adopt (§4.1) | reset | drop | drop |
+| editor process restart | keep | keep | **new** | **new** | **new** | reset | durable only | keep | invalidate | drop | reset | drop | drop |
 
-Evidence today: Unity covers domain reload, editor restart and package
-re-resolution. Blender covers file save, file reopen, loading a different
-document, and editor restart — `tests/blender/lifecycle_document.py` and
-`tools/blender-restart-gate.sh`. Still unproven for Blender: add-on
-disable/enable and re-registration, and undo/redo interleaved with a save.
+Two rows deserve their reasoning.
+
+**Reopening the same document** rotates the document incarnation but not the
+bridge: the same code is running, its sockets are still bound, and its module
+state survived. Everything scoped to the loaded world is void; everything scoped
+to the code is not.
+
+**Unity domain reload** is the mirror image: the bridge is rebuilt while the open
+scene is untouched, so the document incarnation is kept. A transaction is
+orphaned rather than dropped because the scene it describes is still there.
+
+Evidence today. Blender: save, reopen, load-other and process restart are
+asserted by `tests/blender/lifecycle_document.py` and
+`tools/blender-restart-gate.sh`. Unity: domain reload, editor restart and package
+re-resolution are asserted by the EditMode suite and
+`tools/unity-restart-gate.sh`. Unproven and marked so rather than assumed:
+Blender add-on disable/enable and reload, Save As, undo/redo interleaved with a
+save, and every row's journal, idempotency and observation column, none of which
+exist yet.
 
 ## 13. Security posture
 
