@@ -153,6 +153,36 @@ The refusals matter as much as the events, because an empty event list reads as
 The journal is a polling optimisation. Nothing that has to be proved uses it:
 transactions still compare deep fingerprints.
 
+### Idempotency, seeds and the operation ledger
+
+`tests/blender/idempotency.py` (headless) covers fourteen scenarios, written
+after measuring what a duplicate delivery actually did: a resent create made two
+objects, a resent delete reported `NOT_FOUND` for work that had succeeded, and a
+resent absolute transform reported `noop` — protection by accident of the
+operation, not by design.
+
+A lost reply now replays the original response for a create, a delete and an
+absolute transform, and the transform is asserted `replayed` rather than `noop`
+so accidental idempotence cannot pass for the real thing. The same key with
+different parameters or a different seed is `IDEMPOTENCY_MISMATCH` with both
+recipe hashes; the same recipe with a fresh key executes deliberately, which is
+what a candidate branch needs. A retry the host has no record of, an operation
+interrupted between its intent and its result, and a retry naming a replaced
+world are all refused without executing. A transaction that ended keeps its
+tombstones, so a retry after a rollback is told what happened instead of
+resurrecting the operation.
+
+Seeds are enforced rather than encouraged: a test-only stochastic tool is
+refused `SEED_REQUIRED` before any side effect, its seeded retry replays the same
+recorded randomness, and the registry is asserted to reject a seeded tool with no
+channels, seeds on a tool claiming exactness, and an undeclared determinism
+class. The ledger is asserted to write `OP_INTENT` before the side effect and
+`OP_RESULT` after it, with the coordinate frame recorded on every intent.
+
+Not yet covered: two real clients racing one key over TCP, and a bridge reload
+that resumes a verified world — the Blender runtime never resumes one, so its
+ledger resume path is exercised directly and the real reload belongs to Unity.
+
 ### Transaction ownership
 
 `tests/blender/transaction_ownership.py` (headless) is the first Blender gate

@@ -10,6 +10,8 @@ import bpy
 from . import handlers
 from .dispatch import dispatch_request, validate_request
 from .identity import drain_identity_repairs, forget_identity_owners
+from .idempotency import IdempotencyLedger
+from .ledger import OperationLedger
 from .journal import AGENT, EDITOR, ChangeJournal
 from .protocol import HOST_VERSION, PROTOCOL_VERSION
 from .registry import HostError, ToolRegistry
@@ -52,6 +54,10 @@ class RoboVisionRuntime:
         self.world_incarnation = "rvworld:" + str(uuid.uuid4())
         self.document: str | None = None
         self.journal = ChangeJournal(self.world_incarnation)
+        # The durable spine and the duplicate-delivery record, both scoped to the
+        # world, because that is the scope a logical operation belongs to.
+        self.ledger = OperationLedger.open(self.world_incarnation)
+        self.invocations = IdempotencyLedger()
 
     @property
     def running(self) -> bool:
@@ -102,6 +108,7 @@ class RoboVisionRuntime:
             self.bridge = "rvbridge:" + str(uuid.uuid4())
             self.world_incarnation = "rvworld:" + str(uuid.uuid4())
             self.journal.rebind(self.world_incarnation, reason="bridge_attached")
+            self._rebind_operation_records()
             # Nothing the previous attachment remembered belongs to this
             # identity, so the baseline is established fresh rather than diffed
             # against a world that goes by a different name now.
@@ -146,11 +153,23 @@ class RoboVisionRuntime:
         # The bridge is untouched by a file load: same code, same sockets.
         self.world_incarnation = "rvworld:" + str(uuid.uuid4())
         self.document = bpy.data.filepath or None
+        self._rebind_operation_records()
         self.revision = 0
         self._last_fingerprint = None
         self._last_snapshot = None
         self.journal.rebind(self.world_incarnation, reason="load")
         self.reconcile(source=EDITOR)
+
+    def _rebind_operation_records(self) -> None:
+        """Follow the world into its new incarnation.
+
+        A new world gets its own ledger file and an empty invocation record.
+        Nothing is carried across: an idempotency key names an operation planned
+        against one editing context, and a world that has been replaced is not
+        that context however recently it was.
+        """
+        self.ledger = OperationLedger.open(self.world_incarnation)
+        self.invocations = IdempotencyLedger()
 
     def registry_ready(self) -> None:
         if self._registered_tools:

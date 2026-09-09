@@ -182,24 +182,17 @@ scene revision tracks state rather than commands run. The full contract is in
 The journal is a performance optimization for polling. It never substitutes for a
 fingerprint in a proof, and transactions keep comparing deep fingerprints.
 
-## 7. Idempotency
+## 7. Idempotency, recipes and the operation ledger
 
-A lost reply must not become a second bevel.
+Moved to [IDEMPOTENCY.md](IDEMPOTENCY.md), with §7.1 the five identifiers and why
+none of them may be derived from another, §7.2 what a delivery means and where
+the host must answer `INDETERMINATE` rather than guess, §7.3 declared seed
+channels and determinism classes, §7.4 the two-record operation ledger, and §7.5
+the coordinate-frame invariant.
 
-Every mutating request may carry `idempotency_key`. The host keeps a record per
-`(workspace, runtime, key)`:
-
-| situation | behaviour |
-| --- | --- |
-| duplicate while the first is still executing | `IN_PROGRESS`, retryable, no second execution |
-| duplicate after completion | the original response, replayed verbatim, flagged `replayed: true` |
-| duplicate after a bridge incarnation change | `INDETERMINATE` — the host cannot prove what happened; the agent must re-observe |
-| duplicate inside a transaction | scoped to that transaction and discarded with it |
-| timeout with unknown status | the client retries with the same key and gets one of the above, never a silent second apply |
-
-The record is runtime-scoped and in-memory by default. Persisting it across a
-restart is possible but would need the outcome to be durable too, so the honest
-answer across an incarnation boundary is `INDETERMINATE` rather than a guess.
+The short version: a lost reply must not become a second bevel, a deliberate
+second execution of the same recipe must still be possible, and where the host
+cannot tell those apart it must say so instead of executing.
 
 ## 8. Request and response envelopes
 

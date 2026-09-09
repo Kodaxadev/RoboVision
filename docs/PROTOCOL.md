@@ -10,6 +10,13 @@ The host transport is newline-delimited UTF-8 JSON over loopback TCP by default.
 
 `if_revision` is optional for reads and strongly recommended for mutations.
 
+A mutating request may also carry `idempotency_key`, `attempt` and
+`expected_world`. Together they make a retry safe: the key names the intended
+side effect, the attempt counter tells the host this is a redelivery so it
+refuses to guess when it has no record, and the expected world stops a retry
+being reinterpreted in an editing context it was never planned against. A
+replayed response carries `replayed: true`. See CROSS_EDITOR_STATE.md §7.
+
 A mutating response carries `outcome`: `applied` when authored state moved,
 `noop` when the command succeeded and left it exactly as it found it. `revision`
 advances only for `applied`, because it names authoritative scene state rather
@@ -87,6 +94,10 @@ state. The catalog publishes each method's class as `reads`.
 - `TRANSACTION_FINISHED`
 - `TRANSACTION_ADOPTION_REFUSED`
 - `TRANSACTION_RECOVERY_UNCERTAIN`
+- `IDEMPOTENCY_MISMATCH`
+- `INDETERMINATE`
+- `IN_PROGRESS`
+- `SEED_REQUIRED`
 - `EPOCH_SUPERSEDED`
 - `SEQUENCE_TOO_OLD`
 - `INVALID_CONTEXT`

@@ -14,8 +14,9 @@ from typing import Any
 import bpy
 
 from . import undo
-from .protocol import AUTHORED, PROTOCOL_VERSION
-from .registry import AUTHORITATIVE, NOTIFIED, UNKNOWN, HostError
+from .protocol import AUTHORED, HOST_VERSION, PROTOCOL_VERSION
+from .recipe import CANONICAL_FRAME, recipe_hash
+from .registry import AUTHORITATIVE, EXACT, NOTIFIED, UNKNOWN, HostError
 
 # A transaction's own bookkeeping is not a scene mutation, so it does not go
 # through the accept path that decides `applied` versus `noop`.
@@ -71,10 +72,94 @@ def _error_payload(exc: HostError, data: Any = None) -> dict[str, Any]:
     return error
 
 
+def _seeds_for(spec, params: dict[str, Any]) -> dict[str, Any]:
+    """Collect the randomness this operation will use, or refuse to guess it.
+
+    The host must never pick a seed itself. If it did, and the reply were lost,
+    the retry could not even describe the computation that may already have
+    happened — the one thing a client needs in order to ask about it.
+    """
+    if not spec.seeds:
+        return {}
+    seeds: dict[str, Any] = {}
+    missing = []
+    for channel in spec.seeds:
+        value = params.get(channel)
+        if value is None:
+            missing.append(channel)
+        else:
+            seeds[channel] = value
+    if missing:
+        raise HostError(
+            "SEED_REQUIRED",
+            f"{spec.name} is stochastic and needs its randomness recorded: {', '.join(missing)}",
+            data={
+                "method": spec.name,
+                "missing_seeds": missing,
+                "seed_channels": list(spec.seeds),
+                "determinism": spec.determinism,
+                "remedy": "Generate a seed once, keep it with the operation, and send it "
+                          "with every retry.",
+            },
+        )
+    return seeds
+
+
+def _recipe_for(runtime, spec, params: dict[str, Any], seeds: dict[str, Any]) -> str:
+    """What was asked for, independent of which delivery is asking."""
+    hashable = {key: value for key, value in params.items() if key not in spec.seeds}
+    return recipe_hash(
+        method=spec.name,
+        params=hashable,
+        tool_version=HOST_VERSION,
+        determinism=spec.determinism,
+        seeds=seeds,
+        targets={"world": runtime.world_incarnation},
+    )
+
+
+def _close_failed(runtime, intent, key, exc, recovery) -> None:
+    """Close the record for an operation that did not succeed.
+
+    Whether the key may be used again turns on evidence rather than on the fact
+    of failure. If automatic recovery proved the pre-operation fingerprint was
+    restored, the operation definitively did not apply, so the same key may be
+    delivered again and execute — that is the useful outcome for a client
+    retrying a failed call. Without that proof the honest answer is that nobody
+    knows, and a retry is told so instead of being run a second time.
+    """
+    if intent is None:
+        return
+    recovered = bool((recovery or {}).get("recovered"))
+    code = getattr(exc, "code", type(exc).__name__)
+    try:
+        runtime.ledger.result(
+            int(intent["sequence"]),
+            outcome="rejected" if recovered else "indeterminate",
+            error_code=code,
+            recovered=recovered,
+            post_revision=runtime.revision,
+        )
+    except OSError:
+        # A ledger that cannot be written is not a reason to swallow the
+        # original error, which is what the caller is actually waiting for.
+        pass
+    if key is None:
+        return
+    if recovered:
+        runtime.invocations.forget(key)
+    else:
+        runtime.invocations.release(key)
+
+
 def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
     started = time.perf_counter()
     request_id = raw.get("id") if isinstance(raw.get("id"), str) else "invalid"
     mutation_before: dict[str, Any] | None = None
+    # Visible to the failure paths below: a reservation must never be left
+    # looking like an operation that is still running.
+    intent: dict[str, Any] | None = None
+    key: str | None = None
     # What the answer would have been worth, for a failure that happens after the
     # tool is known. Before that it stays unknown rather than being reported as
     # the strongest class.
@@ -83,6 +168,28 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
         method, params, if_revision = validate_request(raw)
         spec = runtime.registry.get(method)
         consistency = spec.reads
+
+        # A retry that names the world it was planned against can never be
+        # reinterpreted in a different one. Checked before anything else,
+        # because every answer below would otherwise be about the wrong world.
+        expected_world = raw.get("expected_world")
+        if isinstance(expected_world, str) and expected_world != runtime.world_incarnation:
+            raise HostError(
+                "STALE_WORLD",
+                "that request was planned against an editing context that is no longer open",
+                data={"expected_world": expected_world,
+                      "current_world_incarnation": runtime.world_incarnation},
+                retryable=True,
+            )
+
+        # Randomness and identity are settled before any side effect, so a lost
+        # reply leaves a client able to describe exactly what it asked for.
+        seeds = _seeds_for(spec, params)
+        recipe = _recipe_for(runtime, spec, params, seeds) if spec.mutating else None
+        key = raw.get("idempotency_key")
+        key = key if isinstance(key, str) and key else None
+        attempt = raw.get("attempt")
+        attempt = int(attempt) if isinstance(attempt, int) and attempt > 0 else 1
         if spec.requires_ui and bpy.app.background:
             raise HostError("INVALID_CONTEXT", f"{method} requires an interactive Blender UI")
 
@@ -111,6 +218,15 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
             # Deliberately cheap. Service a notification if one arrived, but do
             # not pay for a deep read on every poll.
             runtime._refresh_dirty_state()
+        # Is this delivery a duplicate? Asked after the authoritative read, so a
+        # replay reports the revision of the world as it is now, and before any
+        # checkpoint is taken, so a duplicate costs nothing.
+        if spec.mutating and key is not None:
+            replay = runtime.invocations.check(key, recipe, attempt, runtime.world_incarnation)
+            if replay is not None:
+                return _envelope(runtime, request_id, started, consistency=consistency,
+                                 ok=True, **replay)
+
         if spec.mutating and if_revision is not None and if_revision != runtime.revision:
             raise HostError(
                 "STALE_REVISION",
@@ -118,6 +234,34 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
                 data={"expected": if_revision, "actual": runtime.revision},
                 retryable=True,
             )
+
+        # Durable before the side effect, because a crash between changing
+        # Blender and recording that it changed is exactly the case one
+        # post-operation entry cannot describe.
+        intent = None
+        if spec.mutating:
+            intent = runtime.ledger.intent(
+                request_id=request_id,
+                idempotency_key=key,
+                attempt=attempt,
+                method=method,
+                recipe_hash=recipe,
+                params_hash=recipe_hash(method=method, params=params, tool_version=HOST_VERSION,
+                                        determinism=spec.determinism),
+                seeds=seeds,
+                determinism=spec.determinism,
+                frame=CANONICAL_FRAME,
+                transaction=runtime.transactions.active.id if runtime.transactions.active else None,
+                state_domain=AUTHORED,
+                pre_revision=runtime.revision,
+                pre_fingerprint=checkpoint["fingerprint"] if checkpoint else None,
+                tool_version=HOST_VERSION,
+            )
+            if key is not None:
+                runtime.invocations.reserve(
+                    key, recipe, runtime.world_incarnation,
+                    intent.get("transaction"), int(intent["sequence"]),
+                )
 
         if checkpoint is not None and not method.startswith("transaction."):
             mutation_before = undo.prepare_mutation(method, checkpoint)
@@ -142,6 +286,18 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
                              ok=True, result=result)
         if outcome is not None:
             response["outcome"] = outcome
+
+        if intent is not None:
+            runtime.ledger.result(
+                int(intent["sequence"]),
+                outcome=outcome or "completed",
+                post_revision=runtime.revision,
+                post_fingerprint=runtime.current_snapshot()["fingerprint"],
+                journal_cursor=runtime.journal.cursor(),
+                response={"result": result, "outcome": outcome},
+            )
+            if key is not None:
+                runtime.invocations.complete(key, {"result": result, "outcome": outcome})
         return response
 
     except HostError as exc:
@@ -151,6 +307,7 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
         data = None
         if recovery is not None:
             data = {"operation_error_data": exc.data, "automatic_recovery": recovery}
+        _close_failed(runtime, intent, key, exc, recovery)
         return _envelope(runtime, request_id, started, consistency=consistency,
                          ok=False, error=_error_payload(exc, data))
 
@@ -159,6 +316,7 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
         if recovery_error is not None:
             return _envelope(runtime, request_id, started, consistency=consistency,
                              ok=False, error=_error_payload(recovery_error))
+        _close_failed(runtime, intent, key, exc, recovery)
         traceback.print_exc()
         error: dict[str, Any] = {
             "code": "HOST_EXCEPTION",

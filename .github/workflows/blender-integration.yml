@@ -118,6 +118,17 @@ jobs:
             --python-exit-code 1 \
             --python tests/blender/transaction_ownership.py
 
+      - name: Run RoboVision idempotency gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-idempotency
+          "${BLENDER_DIR}/blender" \
+            --background \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/idempotency.py
+
       - name: Run RoboVision change journal gate
         shell: bash
         run: |
