@@ -9,7 +9,7 @@ import bpy
 
 from . import handlers
 from .dispatch import dispatch_request, validate_request
-from .identity import forget_identity_owners
+from .identity import drain_identity_repairs, forget_identity_owners
 from .journal import AGENT, EDITOR, ChangeJournal
 from .protocol import HOST_VERSION, PROTOCOL_VERSION
 from .registry import HostError, ToolRegistry
@@ -34,17 +34,19 @@ class RoboVisionRuntime:
         self._snapshots: dict[str, dict[str, Any]] = {}
         self._snapshot_order: deque[str] = deque()
         self._invalidated_snapshots: dict[str, Any] = {}
-        # Two identities, deliberately separate. The bridge is this loaded
+        # Three identities, deliberately separate. The bridge is this loaded
         # RoboVision runtime: it rotates when the add-on is reloaded or the
-        # bridge restarts, and it does not care which file is open. The document
-        # incarnation is one loaded state universe: it rotates when a document is
-        # opened or replaced, while the bridge keeps running with its sockets
-        # still bound. A handle stale for one reason is not stale for the other,
-        # and one id could not report both.
+        # bridge restarts, and it does not care which file is open. The world
+        # incarnation is one loaded editing context: it rotates when a document
+        # is opened or replaced, while the bridge keeps running with its sockets
+        # still bound. The journal has an identity of its own again, because a
+        # history can end without the world it described ending. A handle stale
+        # for one of these reasons is not stale for the others, and one id could
+        # not report all three.
         self.bridge = "rvbridge:" + str(uuid.uuid4())
-        self.document_incarnation = "rvdoc:" + str(uuid.uuid4())
+        self.world_incarnation = "rvworld:" + str(uuid.uuid4())
         self.document: str | None = None
-        self.journal = ChangeJournal(self.document_incarnation)
+        self.journal = ChangeJournal(self.world_incarnation)
 
     @property
     def running(self) -> bool:
@@ -72,15 +74,23 @@ class RoboVisionRuntime:
         disable/enable detaches and attaches again, and a client must be able to
         tell that the code it was talking to has been replaced. Opening a socket
         on an already attached runtime is not that, so attaching twice is
-        idempotent. The document incarnation rotates with a real reattach
-        because it lives in this bridge's memory, and a reattached bridge cannot
-        know what the previous one minted.
+        idempotent.
+
+        The world incarnation rotates with a real reattach, and that is a
+        limitation rather than a rule. The Unity host keeps its world across a
+        domain reload because it can verify afterwards that the same editing
+        context is still open, and stash the previous identity somewhere the
+        reload does not reach. Blender's add-on reload takes this module's own
+        memory with it and leaves nothing session-scoped to verify against — a
+        custom property would be authored state, and the file may not even be
+        saved — so continuity cannot be proven here and is therefore not
+        claimed.
         """
         self.registry_ready()
         if handlers.attach(self):
             self.bridge = "rvbridge:" + str(uuid.uuid4())
-            self.document_incarnation = "rvdoc:" + str(uuid.uuid4())
-            self.journal.rebind(self.document_incarnation, reason="bridge_attached")
+            self.world_incarnation = "rvworld:" + str(uuid.uuid4())
+            self.journal.rebind(self.world_incarnation, reason="bridge_attached")
             # Nothing the previous attachment remembered belongs to this
             # identity, so the baseline is established fresh rather than diffed
             # against a world that goes by a different name now.
@@ -123,12 +133,12 @@ class RoboVisionRuntime:
         self._snapshots.clear()
         self._snapshot_order.clear()
         # The bridge is untouched by a file load: same code, same sockets.
-        self.document_incarnation = "rvdoc:" + str(uuid.uuid4())
+        self.world_incarnation = "rvworld:" + str(uuid.uuid4())
         self.document = bpy.data.filepath or None
         self.revision = 0
         self._last_fingerprint = None
         self._last_snapshot = None
-        self.journal.rebind(self.document_incarnation, reason="load")
+        self.journal.rebind(self.world_incarnation, reason="load")
         self.reconcile(source=EDITOR)
 
     def registry_ready(self) -> None:
@@ -182,6 +192,15 @@ class RoboVisionRuntime:
         """
         if current is None:
             current = scene_snapshot(level=DEEP)
+
+        # Reading the scene is also when the host notices its own bookkeeping
+        # has been damaged and puts it back. A repair changes no authored state
+        # — the object keeps the id it already had — so it does not move the
+        # scene revision, but the agent is told, because the alternative is a
+        # host that quietly rewrites the world's identities.
+        for repair in drain_identity_repairs():
+            self.journal.record_identity_repair(repair, revision=self.revision)
+
         fingerprint = current["fingerprint"]
         if baseline is None:
             baseline = self._last_snapshot
@@ -322,9 +341,9 @@ class RoboVisionRuntime:
         except KeyError as exc:
             if snapshot_id in self._invalidated_snapshots:
                 raise HostError(
-                    "STALE_DOCUMENT",
-                    "the snapshot was taken in a document incarnation that is no longer loaded",
-                    data={"snapshot": snapshot_id, "document_incarnation": self.document_incarnation},
+                    "STALE_WORLD",
+                    "that snapshot was taken in an editing context that is no longer open",
+                    data={"snapshot": snapshot_id, "current_world_incarnation": self.world_incarnation},
                     retryable=True,
                 ) from exc
             raise HostError("NOT_FOUND", f"snapshot not found: {snapshot_id}") from exc

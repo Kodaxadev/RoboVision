@@ -107,11 +107,11 @@ def a_replaced_document_cursor_is_refused(rv: Host) -> None:
     rv.call("object.create", {"kind": "cube", "name": "New1"})
     rv.call("object.create", {"kind": "cube", "name": "New2"})
 
-    refused = rv.call("scene.changes_since", {"cursor": stale}, ok=False, code="STALE_DOCUMENT")
+    refused = rv.call("scene.changes_since", {"cursor": stale}, ok=False, code="STALE_WORLD")
     data = refused["error"]["data"]
     expect(
-        data.get("current_document_incarnation")
-        == rv.result("scene.describe")["document_incarnation"],
+        data.get("current_world_incarnation")
+        == rv.result("scene.describe")["world_incarnation"],
         f"the refusal did not name the document that is actually loaded: {refused['error']}",
     )
     # The cursor it offers instead works, so the refusal is about identity
@@ -123,13 +123,13 @@ def a_replaced_document_cursor_is_refused(rv: Host) -> None:
 def impossible_cursors_are_refused(rv: Host) -> None:
     clean_scene()
     rv.result("scene.snapshot")
-    prefix, document, epoch, sequence = rv.result("scene.changes_since")["cursor"].split(":")
+    prefix, journal, world, epoch, sequence = rv.result("scene.changes_since")["cursor"].split(":")
 
-    # Same document, same epoch, ahead of everything that has happened: nothing
-    # this host issued could say that.
-    ahead = f"{prefix}:{document}:{epoch}:{int(sequence) + 500}"
+    # Same world, same journal, same epoch, ahead of everything that has
+    # happened: nothing this host issued could say that.
+    ahead = f"{prefix}:{journal}:{world}:{epoch}:{int(sequence) + 500}"
     malformed = ("", "nonsense", "rvcursor:a:b", "rvcursor:a:b:c",
-                 f"{prefix}:{document}:0:1", f"{prefix}:{document}:x:1", 7, None)
+                 f"{prefix}:{journal}:{world}:0:1", f"{prefix}:{journal}:{world}:x:1", 7, None)
     # Every refusal, not only the interesting ones, has to leave the client able
     # to continue. A client that cannot parse its way out of a bad cursor and is
     # not handed a good one has nowhere to go but a full resynchronisation.
@@ -174,8 +174,10 @@ def forgotten_history_is_refused(rv: Host) -> None:
            "asking from the end should be empty")
 
     oldest = rv.runtime.journal._events[0]["sequence"]
-    prefix, document, epoch, _ = head.split(":")
-    served = rv.result("scene.changes_since", {"cursor": f"{prefix}:{document}:{epoch}:{oldest - 1}"})
+    prefix, journal, world, epoch, _ = head.split(":")
+    served = rv.result(
+        "scene.changes_since", {"cursor": f"{prefix}:{journal}:{world}:{epoch}:{oldest - 1}"}
+    )
     expect(len(served["events"]) == RETAINED_EVENTS,
            f"the retention edge served {len(served['events'])} of {RETAINED_EVENTS} events")
 
@@ -198,7 +200,7 @@ def a_document_load_resets_the_journal(rv: Host) -> None:
     expect(reset["epoch"] == 1, f"the journal epoch did not reset on document load: {reset['epoch']}")
     expect(reset["certain"] is True, "the journal did not start the new document certain")
     expect(
-        reset["document_incarnation"] == rv.result("scene.describe")["document_incarnation"],
+        reset["world_incarnation"] == rv.result("scene.describe")["world_incarnation"],
         "the journal is not bound to the current document incarnation",
     )
     expect(reset["sequence"] <= advanced, "the sequence did not restart with the new document")
@@ -206,10 +208,62 @@ def a_document_load_resets_the_journal(rv: Host) -> None:
 
     # The load itself is journalled, and readable from the start of the new
     # document's history.
-    prefix, incarnation, epoch, _ = reset["cursor"].split(":")
-    from_start = rv.result("scene.changes_since", {"cursor": f"{prefix}:{incarnation}:{epoch}:0"})
-    expect(events_of(from_start, "DOCUMENT_OPENED"),
+    prefix, journal, world, epoch, _ = reset["cursor"].split(":")
+    from_start = rv.result(
+        "scene.changes_since", {"cursor": f"{prefix}:{journal}:{world}:{epoch}:0"}
+    )
+    expect(events_of(from_start, "WORLD_OPENED"),
            f"the load itself was not journalled: {from_start['events']}")
+
+
+def a_replaced_journal_is_refused_inside_a_surviving_world(rv: Host) -> None:
+    """An old cursor must not resolve because the numbers happen to line up.
+
+    The Blender runtime does not reach this state today: reattaching its bridge
+    rotates the world as well, because nothing session-scoped survives an add-on
+    reload for it to verify continuity against. The Unity host does reach it —
+    it can prove after a domain reload that the same editing context is still
+    open — and the rule belongs to the journal contract both hosts implement, so
+    it is pinned here too rather than only where it currently bites.
+    """
+    clean_scene()
+    rv.result("object.create", {"kind": "cube", "name": "BeforeReplacement"})
+    stale = cursor_of(rv)
+    world = rv.result("scene.describe")["world_incarnation"]
+    stale_epoch = rv.runtime.journal.epoch
+    stale_sequence = rv.runtime.journal.sequence
+
+    # The history is rebuilt while the world it described stays open, and then
+    # driven far enough that the stale cursor's sequence number exists again.
+    rv.runtime.journal.rebind(world, reason="bridge_attached")
+    for index in range(stale_sequence + 2):
+        if rv.runtime.journal.sequence >= stale_sequence:
+            break
+        rv.result("object.create", {"kind": "cube", "name": f"AfterReplacement{index}"})
+
+    expect(
+        rv.result("scene.describe")["world_incarnation"] == world,
+        "precondition: the world must survive for this to be the dangerous case",
+    )
+    expect(
+        rv.runtime.journal.epoch == stale_epoch,
+        "precondition: both journals must sit at the same epoch, got "
+        f"{stale_epoch} then {rv.runtime.journal.epoch}",
+    )
+    expect(
+        rv.runtime.journal.sequence >= stale_sequence,
+        "precondition: the new journal must have reached the stale sequence number, got "
+        f"{stale_sequence} then {rv.runtime.journal.sequence}",
+    )
+
+    refused = rv.call("scene.changes_since", {"cursor": stale}, ok=False, code="JOURNAL_REPLACED")
+    data = refused["error"]["data"]
+    expect(
+        data.get("current_journal_incarnation") == rv.runtime.journal.journal_incarnation,
+        f"the refusal did not name the journal that is running: {refused['error']}",
+    )
+    expect(rv.result("scene.changes_since", {"cursor": data["current_cursor"]})["events"] == [],
+           "the cursor offered by the refusal did not point at the present")
 
 
 SCENARIOS = (
@@ -219,4 +273,5 @@ SCENARIOS = (
     impossible_cursors_are_refused,
     forgotten_history_is_refused,
     a_document_load_resets_the_journal,
+    a_replaced_journal_is_refused_inside_a_surviving_world,
 )

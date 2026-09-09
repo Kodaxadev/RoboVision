@@ -19,6 +19,14 @@ MESH_TOPOLOGY_KEY = "_robovision_topology"
 # the id on the object the agent already addressed instead of handing it to
 # whichever copy happens to sort first by name.
 _ID_OWNERS: dict[str, int] = {}
+# The same registry read the other way: which id this live object owns. Kept so
+# that an object whose `_robovision_id` was removed or rewritten can be given
+# back the identity it already had, rather than being minted a new one and
+# reported to the agent as a different object.
+_OWNED_IDS: dict[int, str] = {}
+# Control-plane repairs made since they were last drained. These change nothing
+# an author wrote; they record that the host put its own bookkeeping back.
+_REPAIRS: list[dict[str, str]] = []
 
 
 def _derived_linked_id(obj: bpy.types.Object) -> str:
@@ -28,15 +36,82 @@ def _derived_linked_id(obj: bpy.types.Object) -> str:
 
 
 def _claim(oid: str, obj: bpy.types.Object) -> str:
-    _ID_OWNERS[oid] = obj.as_pointer()
+    pointer = obj.as_pointer()
+    previous = _OWNED_IDS.get(pointer)
+    if previous is not None and previous != oid and _ID_OWNERS.get(previous) == pointer:
+        del _ID_OWNERS[previous]
+    _ID_OWNERS[oid] = pointer
+    _OWNED_IDS[pointer] = oid
     return oid
 
 
+def _repair(obj: bpy.types.Object, oid: str, reason: str) -> str:
+    """Put a stable id back on an object that still owns it, and say so.
+
+    Blender's custom properties are writable by anyone: a script, another
+    add-on, or a user with the N panel open can delete `_robovision_id` or
+    overwrite it. Minting a fresh id there loses the agent's handle on an object
+    that never went anywhere, and the change surfaces as a deletion and a
+    creation — a lie about the scene rather than about the host.
+
+    The claim being made is narrow, and it is recorded with the event: this same
+    live object, at this address, already owned that id in this session. What it
+    cannot survive is a file reopen or a restart, where the registry is gone and
+    the property is the only evidence there is.
+    """
+    try:
+        obj[OBJECT_ID_KEY] = oid
+    except (TypeError, AttributeError, RuntimeError):
+        return oid
+    _REPAIRS.append(
+        {
+            "object": obj.name_full,
+            "id": oid,
+            "reason": reason,
+            "basis": "the same live object still owns that id in this session",
+        }
+    )
+    return _claim(oid, obj)
+
+
+def drain_identity_repairs() -> list[dict[str, str]]:
+    """Take the repairs recorded since the last drain, for the journal."""
+    repairs = list(_REPAIRS)
+    _REPAIRS.clear()
+    return repairs
+
+
+def _sweep_owners() -> None:
+    """Forget objects that no longer exist, before their addresses are reused.
+
+    Blender frees a deleted object and a later allocation can land on the same
+    address, so an entry left behind could hand a retired identity to an
+    unrelated new object. Every snapshot and every describe sweeps first, and
+    every mutation is preceded by an authoritative read, so the window is one
+    reconciliation wide rather than a session — narrow, and not zero.
+    """
+    live = {obj.as_pointer() for obj in bpy.data.objects}
+    for pointer in [pointer for pointer in _OWNED_IDS if pointer not in live]:
+        oid = _OWNED_IDS.pop(pointer)
+        if _ID_OWNERS.get(oid) == pointer:
+            del _ID_OWNERS[oid]
+
+
 def object_id(obj: bpy.types.Object, *, create: bool = True) -> str:
+    pointer = obj.as_pointer()
+    owned = _OWNED_IDS.get(pointer)
     existing = obj.get(OBJECT_ID_KEY)
     if isinstance(existing, str) and existing:
-        _ID_OWNERS.setdefault(existing, obj.as_pointer())
+        if owned is not None and owned != existing and _ID_OWNERS.get(owned) == pointer:
+            # The property says one thing and the session says another. The
+            # session watched this object being given that id; the property is
+            # writable by anyone.
+            return _repair(obj, owned, "the stored id was overwritten")
+        _ID_OWNERS.setdefault(existing, pointer)
+        _OWNED_IDS.setdefault(pointer, existing)
         return existing
+    if owned is not None and _ID_OWNERS.get(owned) == pointer:
+        return _repair(obj, owned, "the stored id was removed")
     if not create:
         return _derived_linked_id(obj) if obj.library else ""
     if obj.library is not None:
@@ -50,8 +125,15 @@ def object_id(obj: bpy.types.Object, *, create: bool = True) -> str:
 
 
 def forget_identity_owners() -> None:
-    """Drop the session owner registry, e.g. when a different .blend is loaded."""
+    """Drop the session owner registry, e.g. when a different .blend is loaded.
+
+    Pointer continuity is a claim about one loaded session. Carrying it into a
+    different file would let an address that happens to be reused present itself
+    as proof of an identity it never had.
+    """
     _ID_OWNERS.clear()
+    _OWNED_IDS.clear()
+    _REPAIRS.clear()
 
 
 def resolve_object(ref: Any) -> bpy.types.Object:
@@ -77,6 +159,7 @@ def normalize_object_ids() -> list[dict[str, str]]:
     without the owner check a copy could silently inherit the identity an agent
     is holding and later mutations would address the wrong object.
     """
+    _sweep_owners()
     claimants: dict[str, list[bpy.types.Object]] = {}
     for obj in sorted(bpy.data.objects, key=lambda item: item.name_full):
         if obj.library is not None:
@@ -88,6 +171,7 @@ def normalize_object_ids() -> list[dict[str, str]]:
         if len(objects) < 2:
             if objects:
                 _ID_OWNERS.setdefault(oid, objects[0].as_pointer())
+                _OWNED_IDS.setdefault(objects[0].as_pointer(), oid)
             continue
         owner_pointer = _ID_OWNERS.get(oid)
         keeper = next((obj for obj in objects if obj.as_pointer() == owner_pointer), objects[0])

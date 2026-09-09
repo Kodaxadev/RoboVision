@@ -95,8 +95,8 @@ namespace Kodaxa.RoboVision.Editor
         public long Revision => _reconciler.Revision;
         /// <summary>This loaded RoboVision runtime; rotates on a domain or assembly reload.</summary>
         public string Bridge => _reconciler.Bridge;
-        /// <summary>This loaded world; rotates when a different scene set is open.</summary>
-        public string DocumentIncarnation => _reconciler.DocumentIncarnation;
+        /// <summary>This editing context; rotates when a different one is opened.</summary>
+        public string WorldIncarnation => _reconciler.WorldIncarnation;
         internal RoboVisionJournal Journal => _reconciler.Journal;
         internal SceneRead CurrentRead => _reconciler.Current ?? _reconciler.Resync();
         public int Port => _server?.Port ?? DefaultPort;
@@ -520,7 +520,7 @@ namespace Kodaxa.RoboVision.Editor
                         },
                         ["revision"] = Revision,
                         ["bridge"] = Bridge,
-                        ["document_incarnation"] = DocumentIncarnation,
+                        ["world_incarnation"] = WorldIncarnation,
                         ["journal"] = Journal.State(),
                         ["capability_count"] = capabilities.Count,
                         ["capabilities"] = capabilities,

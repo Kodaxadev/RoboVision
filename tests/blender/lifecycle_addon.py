@@ -85,7 +85,7 @@ def detach_and_reattach_repeatedly(rv: Host) -> None:
         expect(token == before, "reattaching within one module load changed the module token")
         described = rv.result("scene.describe")
         bridges.append(described["bridge"])
-        documents.append(described["document_incarnation"])
+        documents.append(described["world_incarnation"])
 
     expect(len(set(bridges)) == 3, f"reattaching reused a bridge identity: {bridges}")
     expect(
@@ -95,7 +95,7 @@ def detach_and_reattach_repeatedly(rv: Host) -> None:
     )
 
     # A cursor from before the reattach names a world this bridge never knew.
-    rv.call("scene.changes_since", {"cursor": cursor}, ok=False, code="STALE_DOCUMENT")
+    rv.call("scene.changes_since", {"cursor": cursor}, ok=False, code="STALE_WORLD")
     restarted = rv.result("scene.changes_since")
     expect(restarted["epoch"] == 1, f"the journal did not restart on reattach: {restarted['epoch']}")
 

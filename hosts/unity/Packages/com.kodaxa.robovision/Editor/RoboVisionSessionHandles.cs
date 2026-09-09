@@ -23,10 +23,23 @@ namespace Kodaxa.RoboVision.Editor
     /// Tokens are session-scoped by design and do not survive a domain reload.
     /// A caller that needs durable identity must save the object and use its
     /// <c>GlobalObjectId</c>.
+    ///
+    /// Which is why the token carries the scope it belongs to. A bare counter
+    /// restarts at 1 in the rebuilt domain, so a client holding
+    /// <c>unity:session:1</c> from before a reload could be handed a different
+    /// object under the same name afterwards — the handle failing loudly would
+    /// have been an accident of how high the counter had climbed, not a
+    /// guarantee. The scope rotates with the loaded domain, exactly as the
+    /// bridge incarnation does and for the same reason, so a token from a
+    /// previous one cannot be mistaken for a current one.
     /// </remarks>
     internal static class RoboVisionSessionHandles
     {
         internal const string Prefix = "unity:session:";
+
+        /// <summary>This loaded domain, minted once and never reused.</summary>
+        private static readonly string Scope =
+            Guid.NewGuid().ToString("N").Substring(0, 8) + ":";
 
         private static readonly Dictionary<UnityEngine.Object, string> Tokens =
             new Dictionary<UnityEngine.Object, string>();
@@ -40,7 +53,7 @@ namespace Kodaxa.RoboVision.Editor
             if (Tokens.TryGetValue(obj, out var existing) && Objects.ContainsKey(existing)) return existing;
 
             _next++;
-            var token = Prefix + _next.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var token = Prefix + Scope + _next.ToString(System.Globalization.CultureInfo.InvariantCulture);
             Tokens[obj] = token;
             Objects[token] = obj;
             return token;

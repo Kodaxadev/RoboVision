@@ -11,10 +11,12 @@ agent trusts more than it should:
 - when the host cannot say what changed, it says so and stops claiming certainty
 - certainty is an epoch, and losing it is sticky: only an authoritative snapshot
   opens a new epoch, never a later quiet-looking notification
-- the journal is scoped to one document incarnation and resets with it
-- a client's position is a cursor that names the document and the epoch it came
-  from, so a position from a world that no longer exists is refused rather than
-  silently reinterpreted against the current one
+- the journal is scoped to one world incarnation and resets with it
+- a client's position is a cursor that names the world it was issued in, the run
+  of the journal that issued it and the certainty epoch it belongs to, so a
+  position from a world that no longer exists — or from a history that was
+  rebuilt inside a world that does — is refused rather than silently
+  reinterpreted against the current one
 - every cursor refusal carries `current_cursor`, so a client always learns where
   to resume rather than only that it cannot continue
 
@@ -24,6 +26,7 @@ from __future__ import annotations
 
 from collections import deque
 import time
+import uuid
 from typing import Any, Iterable
 
 from .registry import HostError
@@ -39,8 +42,9 @@ OBJECT_CREATED = "OBJECT_CREATED"
 OBJECT_DELETED = "OBJECT_DELETED"
 OBJECT_CHANGED = "OBJECT_CHANGED"
 TOPOLOGY_CHANGED = "TOPOLOGY_CHANGED"
+IDENTITY_REPAIRED = "IDENTITY_REPAIRED"
 RESYNC_REQUIRED = "RESYNC_REQUIRED"
-DOCUMENT_OPENED = "DOCUMENT_OPENED"
+WORLD_OPENED = "WORLD_OPENED"
 BRIDGE_ATTACHED = "BRIDGE_ATTACHED"
 
 AGENT = "agent"
@@ -49,10 +53,16 @@ HOST = "host"
 
 
 class ChangeJournal:
-    """Per-document-incarnation history of what changed and who changed it."""
+    """Per-world-incarnation history of what changed and who changed it."""
 
-    def __init__(self, document_incarnation: str) -> None:
-        self.document_incarnation = document_incarnation
+    def __init__(self, world_incarnation: str) -> None:
+        self.world_incarnation = world_incarnation
+        # Which run of the journal this is inside that world. A world can
+        # outlive the history kept about it — a bridge can be rebuilt while the
+        # file stays open — and every counter in a cursor restarts at 1 when
+        # that happens, so only a separate identity keeps an old position from
+        # resolving against a history that has never seen it.
+        self.journal_incarnation = "rvjournal:" + str(uuid.uuid4())
         self.epoch = 1
         self.certain = True
         self.sequence = 0
@@ -61,22 +71,26 @@ class ChangeJournal:
 
     # ---------------------------------------------------------------- cursors
 
-    @property
-    def _cursor_document(self) -> str:
-        # The document incarnation is `rvdoc:<uuid>`; the prefix is dropped so a
-        # cursor stays four colon-separated fields and parses unambiguously.
-        _, _, tail = self.document_incarnation.partition(":")
-        return tail or self.document_incarnation
+    @staticmethod
+    def _tail(incarnation: str) -> str:
+        # Incarnations are `<kind>:<uuid>`; the kind is dropped so a cursor stays
+        # five colon-separated fields and parses unambiguously.
+        _, _, tail = incarnation.partition(":")
+        return tail or incarnation
 
     def cursor(self) -> str:
-        """The client's position, bound to the world it was issued in.
+        """The client's position, bound to the history that issued it.
 
         A bare sequence number is not a position. Sequence restarts at a new
-        certainty epoch and at a new document, so the same integer names
-        different moments in different worlds, and a host handed one out of
-        context cannot tell which it meant.
+        certainty epoch, at a new journal and at a new world, so the same
+        integer names different moments in different histories — and every one
+        of those counters starts again from the same number, so no counter
+        separates them either. Only the two incarnations do.
         """
-        return f"{CURSOR_PREFIX}:{self._cursor_document}:{self.epoch}:{self.sequence}"
+        return (
+            f"{CURSOR_PREFIX}:{self._tail(self.journal_incarnation)}"
+            f":{self._tail(self.world_incarnation)}:{self.epoch}:{self.sequence}"
+        )
 
     def _refuse(self, code: str, message: str, *, cursor: Any, retryable: bool = False,
                 **extra: Any) -> HostError:
@@ -96,9 +110,10 @@ class ChangeJournal:
     def _parse_cursor(self, cursor: Any) -> int:
         """Check a cursor against this journal.
 
-        What this establishes: the cursor is well formed, names the document
-        incarnation loaded now, names the current certainty epoch, and falls
-        inside the retained range. What it does not establish is issuance.
+        What this establishes: the cursor is well formed, names the world that
+        is open now and the journal running in it, names the current certainty
+        epoch, and falls inside the retained range. What it does not establish
+        is issuance.
         Nothing here is signed, so a client that constructs a syntactically
         valid cursor for the current world is indistinguishable from one handed
         the same string. That is deliberate for a read-only journal: a forged
@@ -108,13 +123,13 @@ class ChangeJournal:
         if not isinstance(cursor, str) or not cursor:
             raise self._refuse("INVALID_PARAMS", "cursor must be a string", cursor=cursor)
         parts = cursor.split(":")
-        if len(parts) != 4 or parts[0] != CURSOR_PREFIX:
+        if len(parts) != 5 or parts[0] != CURSOR_PREFIX:
             raise self._refuse(
                 "INVALID_PARAMS",
-                f"cursor must look like {CURSOR_PREFIX}:<document>:<epoch>:<sequence>",
+                f"cursor must look like {CURSOR_PREFIX}:<journal>:<world>:<epoch>:<sequence>",
                 cursor=cursor,
             )
-        _, document, epoch_text, sequence_text = parts
+        _, journal, world, epoch_text, sequence_text = parts
         try:
             epoch = int(epoch_text)
             sequence = int(sequence_text)
@@ -125,16 +140,27 @@ class ChangeJournal:
             raise self._refuse("INVALID_PARAMS", "cursor epoch and sequence are out of range",
                                cursor=cursor)
 
-        # Order matters. The document is checked first because epoch numbers
-        # collide across documents — both start at 1 — so an epoch that matches
-        # proves nothing until the world it belongs to has been established.
-        if document != self._cursor_document:
+        # Order matters, outermost scope first. Every counter in a cursor
+        # restarts at 1 in a new world and in a new journal, so a matching epoch
+        # proves nothing until both scopes are settled — and the two fail for
+        # reasons a client has to act on differently, so they are separate codes
+        # rather than one.
+        if world != self._tail(self.world_incarnation):
             raise self._refuse(
-                "STALE_DOCUMENT",
-                "that cursor names a document incarnation that is no longer loaded",
+                "STALE_WORLD",
+                "that cursor names an editing context that is no longer open",
                 cursor=cursor,
                 retryable=True,
-                current_document_incarnation=self.document_incarnation,
+                current_world_incarnation=self.world_incarnation,
+            )
+        if journal != self._tail(self.journal_incarnation):
+            raise self._refuse(
+                "JOURNAL_REPLACED",
+                "the world is still open but this journal did not write that cursor; "
+                "its history was rebuilt and is gone",
+                cursor=cursor,
+                retryable=True,
+                current_journal_incarnation=self.journal_incarnation,
             )
         if epoch != self.epoch:
             raise self._refuse(
@@ -146,7 +172,8 @@ class ChangeJournal:
                 current_epoch=self.epoch,
             )
         if sequence > self.sequence:
-            # Same document, same epoch, ahead of everything that has happened.
+            # Same world, same journal, same epoch, ahead of everything that
+            # has happened.
             # No position in this journal carries that number yet.
             raise self._refuse(
                 "INVALID_PARAMS",
@@ -215,6 +242,24 @@ class ChangeJournal:
             written += 1
         return written
 
+    def record_identity_repair(self, repair: dict[str, str], *, revision: int) -> None:
+        """The host put its own bookkeeping back; nothing an author wrote moved.
+
+        `_robovision_id` is a custom property and anyone can delete or rewrite
+        it. Before this, doing so minted a replacement id, and the change
+        reached the agent as a deletion and a creation — the scene claiming an
+        object had been destroyed when only the host's record of its name had
+        been damaged. The event carries the basis for the claim, because a
+        restored identity is only worth as much as the evidence behind it.
+        """
+        self._append(
+            IDENTITY_REPAIRED,
+            revision=revision,
+            source=HOST,
+            ids=[repair["id"]],
+            detail=dict(repair),
+        )
+
     def lose_certainty(self, reason: str, *, revision: int) -> None:
         """Record that the host cannot account for a change.
 
@@ -246,24 +291,31 @@ class ChangeJournal:
         self._events.clear()
         return True
 
-    def rebind(self, document_incarnation: str, *, reason: str) -> None:
-        """Start again under a new document identity.
+    def rebind(self, world_incarnation: str, *, reason: str) -> None:
+        """Start again: a different world, or the same world with no history.
 
-        Both a file load and a bridge reattach reach here: in each case the
-        journal now describes a world whose identity the previous history does
-        not belong to, and cursors from it must stop resolving.
+        Both a file load and a bridge reattach reach here. The journal
+        incarnation rotates in both cases because the history is gone in both
+        cases, which is what a client's cursor depends on; the world incarnation
+        is passed in because only the runtime can say whether the editing
+        context itself survived.
         """
-        self.document_incarnation = document_incarnation
+        self.world_incarnation = world_incarnation
+        self.journal_incarnation = "rvjournal:" + str(uuid.uuid4())
         self.epoch = 1
         self.certain = True
         self._uncertain_reason = None
         self.sequence = 0
         self._events.clear()
         self._append(
-            DOCUMENT_OPENED if reason == "load" else BRIDGE_ATTACHED,
+            WORLD_OPENED if reason == "load" else BRIDGE_ATTACHED,
             revision=0,
             source=HOST,
-            detail={"document_incarnation": document_incarnation, "reason": reason},
+            detail={
+                "world_incarnation": world_incarnation,
+                "journal_incarnation": self.journal_incarnation,
+                "reason": reason,
+            },
         )
 
     # ---------------------------------------------------------------- reading
@@ -274,7 +326,8 @@ class ChangeJournal:
             "certain": self.certain,
             "sequence": self.sequence,
             "cursor": self.cursor(),
-            "document_incarnation": self.document_incarnation,
+            "world_incarnation": self.world_incarnation,
+            "journal_incarnation": self.journal_incarnation,
             "uncertain_reason": self._uncertain_reason,
             "retained": len(self._events),
         }

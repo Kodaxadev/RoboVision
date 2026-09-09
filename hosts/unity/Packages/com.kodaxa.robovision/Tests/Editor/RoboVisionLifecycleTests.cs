@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.IO;
+using System.Linq;
 using NUnit.Framework;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
@@ -24,7 +25,9 @@ namespace Kodaxa.RoboVision.Editor.Tests
     ///
     /// State that has to cross the reload is stashed in <c>SessionState</c>,
     /// which survives a domain reload but not an editor restart — the test's
-    /// own fields do not survive either.
+    /// own fields do not survive either. The host uses it for the same reason
+    /// and with the same scope: an editor restart is exactly the boundary at
+    /// which a new world identity is correct anyway.
     /// </remarks>
     public sealed class RoboVisionLifecycleTests
     {
@@ -33,7 +36,9 @@ namespace Kodaxa.RoboVision.Editor.Tests
         private const string SessionKey = "RoboVision.Tests.SessionHandle";
         private const string DurableKey = "RoboVision.Tests.DurableId";
         private const string BridgeKey = "RoboVision.Tests.Bridge";
-        private const string DocumentKey = "RoboVision.Tests.Document";
+        private const string WorldKey = "RoboVision.Tests.World";
+        private const string JournalKey = "RoboVision.Tests.Journal";
+        private const string RevisionKey = "RoboVision.Tests.Revision";
         private const string CursorKey = "RoboVision.Tests.Cursor";
 
         private static Harness NewHarness() => new Harness("lifecycle");
@@ -51,48 +56,184 @@ namespace Kodaxa.RoboVision.Editor.Tests
             SessionState.EraseString(SessionKey);
             SessionState.EraseString(DurableKey);
             SessionState.EraseString(BridgeKey);
-            SessionState.EraseString(DocumentKey);
+            SessionState.EraseString(WorldKey);
+            SessionState.EraseString(JournalKey);
+            SessionState.EraseString(RevisionKey);
             SessionState.EraseString(CursorKey);
             if (AssetDatabase.IsValidFolder(Directory)) AssetDatabase.DeleteAsset(Directory);
             AssetDatabase.Refresh();
         }
 
+        /// <summary>
+        /// A rebuilt bridge is not a new world, and must not pretend to be.
+        /// </summary>
+        /// <remarks>
+        /// This claim is stronger than the one it replaces, and it is only
+        /// allowed because it can be checked. A domain reload leaves the
+        /// editor's scenes exactly where they were — measured: the loaded scene
+        /// handles were identical either side of a play mode round trip — and
+        /// SessionState carries the previous identity across, so the host can
+        /// read the context back out of the editor and see for itself that it is
+        /// the same one. Declaring the world replaced would have cost the client
+        /// every durable reference it holds for no reason but our own restart.
+        ///
+        /// What does not survive is the history. The journal is new, so a cursor
+        /// from before the reload is refused — and refused as a replaced
+        /// journal, not a replaced world, because those are different problems:
+        /// one means re-observe everything, the other means resume where you
+        /// were with the references you already have.
+        /// </remarks>
         [UnityTest]
-        public IEnumerator ADomainReloadInvalidatesTheBridgeDocumentAndJournalCursors()
+        public IEnumerator ADomainReloadRebuildsTheBridgeAndJournalButNotTheWorld()
         {
             Harness.FreshScene();
             var before = NewHarness();
             before.CreateObject("BeforeReload");
+            EditorSceneManager.SaveScene(SceneManager.GetActiveScene(), ScenePath);
+
             var described = before.Result("scene.describe");
+            var journal = before.Result("scene.changes_since");
             SessionState.SetString(BridgeKey, described.Value<string>("bridge"));
-            SessionState.SetString(DocumentKey, described.Value<string>("document_incarnation"));
+            SessionState.SetString(WorldKey, described.Value<string>("world_incarnation"));
+            SessionState.SetString(RevisionKey, described.Value<long>("revision").ToString());
+            SessionState.SetString(JournalKey, journal.Value<string>("journal_incarnation"));
+            SessionState.SetString(CursorKey, journal.Value<string>("cursor"));
+
+            yield return new EnterPlayMode();
+            yield return new ExitPlayMode();
+
+            var staleBridge = SessionState.GetString(BridgeKey, null);
+            var staleWorld = SessionState.GetString(WorldKey, null);
+            var staleJournal = SessionState.GetString(JournalKey, null);
+            var staleCursor = SessionState.GetString(CursorKey, null);
+            var staleRevision = Int64.Parse(SessionState.GetString(RevisionKey, "-1"));
+            Assert.That(staleCursor, Is.Not.Null.And.Not.Empty, "the test lost its own state across the reload");
+
+            var after = NewHarness();
+            var now = after.Result("scene.describe");
+            var nowJournal = after.Result("scene.changes_since");
+
+            Assert.That(now.Value<string>("bridge"), Is.Not.EqualTo(staleBridge),
+                "a rebuilt bridge reported the previous bridge identity");
+            Assert.That(now.Value<string>("world_incarnation"), Is.EqualTo(staleWorld),
+                "the same scenes are open, verified by reading them, and the host still declared "
+                + "the editing context replaced");
+            Assert.That(nowJournal.Value<string>("journal_incarnation"), Is.Not.EqualTo(staleJournal),
+                "the journal's history died with the domain and it claimed the same identity");
+            Assert.That(now.Value<long>("revision"), Is.EqualTo(staleRevision),
+                "a saved scene hashes the same across a reload, so the revision must resume");
+            Assert.That(nowJournal.Value<bool>("certain"), Is.True,
+                "nothing changed across the reload and the host said it could not tell");
+
+            // The equal-counter case: same world, same epoch, and the new
+            // journal has already reached the sequence number the stale cursor
+            // names. Only the journal identity separates them.
+            after.CreateObject("AfterReload");
+            var refused = after.Call("scene.changes_since", new JObject { ["cursor"] = staleCursor },
+                ok: false, code: "JOURNAL_REPLACED");
+            var data = (JObject)refused["error"]["data"];
+            Assert.That(data.Value<string>("current_cursor"),
+                Is.Not.Null.And.Not.Empty, "the refusal did not say where to resume from");
+            Assert.That(data.Value<string>("current_journal_incarnation"),
+                Is.EqualTo(after.Result("scene.changes_since").Value<string>("journal_incarnation")));
+        }
+
+        /// <summary>
+        /// In an unsaved scene the reload re-addresses everything, and the host says so.
+        /// </summary>
+        /// <remarks>
+        /// An object with no durable identity is addressed by a session handle,
+        /// and those die with the domain. Every object therefore comes back
+        /// under a new name, the world no longer hashes the way it did, and
+        /// nothing observed the transition. The host cannot say whether anything
+        /// authored moved, so it says exactly that rather than reporting a scene
+        /// full of deletions and creations that never happened.
+        /// </remarks>
+        [UnityTest]
+        public IEnumerator ADomainReloadInAnUnsavedSceneAdmitsItCannotAccountForTheChange()
+        {
+            Harness.FreshScene();
+            var before = NewHarness();
+            var sessionId = before.CreateObject("Unsaved");
+            Assert.That(sessionId, Does.StartWith("unity:session:"),
+                "precondition: this object must have no durable identity");
+            SessionState.SetString(WorldKey,
+                before.Result("scene.describe").Value<string>("world_incarnation"));
+
+            yield return new EnterPlayMode();
+            yield return new ExitPlayMode();
+
+            var staleWorld = SessionState.GetString(WorldKey, null);
+            var after = NewHarness();
+            var now = after.Result("scene.describe");
+            var journal = after.Result("scene.changes_since");
+
+            Assert.That(now.Value<string>("world_incarnation"), Is.EqualTo(staleWorld),
+                "the same scenes are open and the host declared the editing context replaced");
+            Assert.That(journal.Value<bool>("certain"), Is.False,
+                "the world came back hashing differently and the host claimed it knew why");
+            Assert.That(journal.Value<string>("uncertain_reason"), Is.Not.Null.And.Not.Empty,
+                "certainty was lost without a reason a client could act on");
+        }
+
+        /// <summary>
+        /// A reload that began inside a Prefab Stage must report whichever world it is in.
+        /// </summary>
+        /// <remarks>
+        /// Whether Unity keeps a Prefab Stage open across a play mode round trip
+        /// is Unity's business, and asserting a guess about it would be a test
+        /// of the editor rather than of the host. What the host owes is the same
+        /// either way: the world it reports must be the world that is actually
+        /// open, and a position from before the reload must not resolve.
+        /// </remarks>
+        [UnityTest]
+        public IEnumerator ADomainReloadInsideAPrefabStageReportsTheWorldItWokeUpIn()
+        {
+            Harness.FreshScene();
+            var before = NewHarness();
+            var source = new GameObject("Staged");
+            var prefabPath = Directory + "/Staged.prefab";
+            PrefabUtility.SaveAsPrefabAsset(source, prefabPath);
+            UnityEngine.Object.DestroyImmediate(source);
+
+            var stage = PrefabStageUtility.OpenPrefab(prefabPath);
+            Assert.That(stage, Is.Not.Null, "precondition: the prefab stage did not open");
+            SessionState.SetString(WorldKey,
+                before.Result("scene.describe").Value<string>("world_incarnation"));
             SessionState.SetString(CursorKey,
                 before.Result("scene.changes_since").Value<string>("cursor"));
 
             yield return new EnterPlayMode();
             yield return new ExitPlayMode();
 
-            var staleBridge = SessionState.GetString(BridgeKey, null);
-            var staleDocument = SessionState.GetString(DocumentKey, null);
+            var staleWorld = SessionState.GetString(WorldKey, null);
             var staleCursor = SessionState.GetString(CursorKey, null);
-            Assert.That(staleCursor, Is.Not.Null.And.Not.Empty, "the test lost its own state across the reload");
-
             var after = NewHarness();
             var now = after.Result("scene.describe");
+            var stillStaged = PrefabStageUtility.GetCurrentPrefabStage() != null;
 
-            // Every static in the package died with the domain, so the host that
-            // answers now is not the one that issued any of this.
-            Assert.That(now.Value<string>("bridge"), Is.Not.EqualTo(staleBridge),
-                "a rebuilt bridge reported the previous bridge identity");
-            Assert.That(now.Value<string>("document_incarnation"), Is.Not.EqualTo(staleDocument),
-                "a rebuilt bridge cannot know what the previous one minted and must not claim to");
+            if (stillStaged)
+            {
+                Assert.That(now.Value<string>("world_incarnation"), Is.EqualTo(staleWorld),
+                    "the same prefab is still open for editing and the host replaced the world");
+                after.Call("scene.changes_since", new JObject { ["cursor"] = staleCursor },
+                    ok: false, code: "JOURNAL_REPLACED");
+            }
+            else
+            {
+                Assert.That(now.Value<string>("world_incarnation"), Is.Not.EqualTo(staleWorld),
+                    "the prefab stage closed across the reload and the host went on reporting "
+                    + "the world it was editing inside it");
+                after.Call("scene.changes_since", new JObject { ["cursor"] = staleCursor },
+                    ok: false, code: "STALE_WORLD");
+            }
 
-            // The journal restarted with it, so a position from before is a
-            // position in a world this host never had.
-            var refused = after.Call("scene.changes_since", new JObject { ["cursor"] = staleCursor },
-                ok: false, code: "STALE_DOCUMENT");
-            Assert.That(((JObject)refused["error"]["data"]).Value<string>("current_cursor"),
-                Is.Not.Null.And.Not.Empty, "the refusal did not say where to resume from");
+            // Either way, what is reported is what is open.
+            var kinds = now["scenes"].Select(scene => scene.Value<string>("kind")).ToList();
+            Assert.That(kinds.Contains("prefab_stage"), Is.EqualTo(stillStaged),
+                "the host described a prefab stage it is not in, or missed the one it is");
+
+            if (PrefabStageUtility.GetCurrentPrefabStage() != null) StageUtility.GoToMainStage();
         }
 
         [UnityTest]
@@ -155,6 +296,15 @@ namespace Kodaxa.RoboVision.Editor.Tests
             var code = response["error"].Value<string>("code");
             Assert.That(code, Is.EqualTo("NOT_FOUND"),
                 "a session handle from before the domain reload did not fail cleanly; got " + code);
+
+            // And that failure has to be a guarantee rather than luck. A bare
+            // counter restarts in the rebuilt domain, so the handles it issues
+            // next would eventually collide with low-numbered ones from before
+            // and silently address a different object; the scope in the token is
+            // what makes the collision impossible.
+            var reissued = after.CreateObject("AfterReload");
+            Assert.That(reissued, Is.Not.EqualTo(staleHandle),
+                "a handle issued after the reload reused a name from before it");
         }
 
         [UnityTest]

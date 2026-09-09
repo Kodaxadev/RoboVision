@@ -78,7 +78,7 @@ namespace Kodaxa.RoboVision.Editor
         {
             // The host has already re-read the scene to validate if_revision, so
             // recomputing here would pay for the same hash twice.
-            fingerprint = fingerprint ?? RoboVisionSceneTools.ComputeFingerprint();
+            fingerprint = fingerprint ?? RoboVisionSceneRead.ComputeFingerprint();
             Undo.IncrementCurrentGroup();
             var group = Undo.GetCurrentGroup();
             Undo.SetCurrentGroupName("RoboVision OP " + label);
@@ -87,7 +87,7 @@ namespace Kodaxa.RoboVision.Editor
 
         public JObject RecoverFailedMutation(OperationCheckpoint checkpoint)
         {
-            var current = RoboVisionSceneTools.ComputeFingerprint();
+            var current = RoboVisionSceneRead.ComputeFingerprint();
             if (String.Equals(current, checkpoint.Fingerprint, StringComparison.Ordinal))
                 return new JObject
                 {
@@ -99,7 +99,7 @@ namespace Kodaxa.RoboVision.Editor
 
             Undo.FlushUndoRecordObjects();
             Undo.RevertAllDownToGroup(checkpoint.UndoGroup);
-            current = RoboVisionSceneTools.ComputeFingerprint();
+            current = RoboVisionSceneRead.ComputeFingerprint();
             if (!String.Equals(current, checkpoint.Fingerprint, StringComparison.Ordinal))
                 throw new RoboVisionException(
                     "MUTATION_RECOVERY_INCOMPLETE",
@@ -129,7 +129,7 @@ namespace Kodaxa.RoboVision.Editor
 
             var id = parameters.Value<string>("transaction") ?? ("tx:" + Guid.NewGuid());
             var label = parameters.Value<string>("label") ?? "agent edit";
-            var fingerprint = RoboVisionSceneTools.ComputeFingerprint();
+            var fingerprint = RoboVisionSceneRead.ComputeFingerprint();
             Undo.IncrementCurrentGroup();
             var group = Undo.GetCurrentGroup();
             Undo.SetCurrentGroupName("RoboVision " + label);
@@ -158,7 +158,7 @@ namespace Kodaxa.RoboVision.Editor
             AssertSafeOrForced(tx, parameters, "commit");
             Undo.FlushUndoRecordObjects();
             Undo.CollapseUndoOperations(tx.UndoGroup);
-            var finalFingerprint = RoboVisionSceneTools.ComputeFingerprint();
+            var finalFingerprint = RoboVisionSceneRead.ComputeFingerprint();
             _active = null;
             return new JObject
             {
@@ -176,7 +176,7 @@ namespace Kodaxa.RoboVision.Editor
             AssertSafeOrForced(tx, parameters, "rollback");
             Undo.FlushUndoRecordObjects();
             Undo.RevertAllDownToGroup(tx.UndoGroup);
-            var actual = RoboVisionSceneTools.ComputeFingerprint();
+            var actual = RoboVisionSceneRead.ComputeFingerprint();
             if (!String.Equals(actual, tx.BeginFingerprint, StringComparison.Ordinal))
                 throw new RoboVisionException(
                     "ROLLBACK_INCOMPLETE",

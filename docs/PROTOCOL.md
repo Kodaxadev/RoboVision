@@ -10,11 +10,18 @@ The host transport is newline-delimited UTF-8 JSON over loopback TCP by default.
 
 `if_revision` is optional for reads and strongly recommended for mutations.
 
-A mutating response carries `outcome`: `applied` when the scene fingerprint
-moved, `noop` when the command succeeded and left the state exactly as it found
-it. `revision` advances only for `applied`, because it names authoritative scene
-state rather than commands executed — a `noop` writes no journal events either,
-and the two must never disagree about whether anything happened.
+A mutating response carries `outcome`: `applied` when authored state moved,
+`noop` when the command succeeded and left it exactly as it found it. `revision`
+advances only for `applied`, because it names authoritative scene state rather
+than commands executed, and the journal and the revision must never disagree
+about whether anything happened.
+
+Authored state is the distinction that decides both. RoboVision's own
+bookkeeping — an object being re-addressed, an identity repaired — is
+control-plane, not something an author wrote, so it moves neither `outcome` nor
+`revision`. It is not silent either: it is journalled as `IDENTITY_UPGRADED` or
+`IDENTITY_REPAIRED` with the basis for the claim, because the agent's valid
+address for an object may have changed even though the scene did not.
 
 Every response also carries `consistency`, saying what the revision it reports is
 worth: `authoritative` means the host re-read the scene for this call, so the
@@ -45,6 +52,10 @@ state. The catalog publishes each method's class as `reads`.
 - `UNSUPPORTED`
 - `STALE_REVISION`
 - `STALE_TOPOLOGY`
+- `STALE_WORLD`
+- `JOURNAL_REPLACED`
+- `EPOCH_SUPERSEDED`
+- `SEQUENCE_TOO_OLD`
 - `INVALID_CONTEXT`
 - `TRANSACTION_ACTIVE`
 - `NO_TRANSACTION`

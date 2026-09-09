@@ -14,7 +14,7 @@ namespace Kodaxa.RoboVision.Editor
     /// ids and are attributed to the agent's own request or to the editor; when
     /// the host cannot say what changed it says so and stops claiming certainty;
     /// certainty is an epoch and losing it is sticky; the journal is scoped to
-    /// one document incarnation and resets with it.
+    /// one world incarnation and resets with it.
     ///
     /// It is a polling optimisation. Anything that has to be proved still
     /// compares fingerprints.
@@ -28,8 +28,11 @@ namespace Kodaxa.RoboVision.Editor
         internal const string ObjectCreated = "OBJECT_CREATED";
         internal const string ObjectDeleted = "OBJECT_DELETED";
         internal const string ObjectChanged = "OBJECT_CHANGED";
+        internal const string SceneLoaded = "SCENE_LOADED";
+        internal const string SceneUnloaded = "SCENE_UNLOADED";
+        internal const string IdentityUpgraded = "IDENTITY_UPGRADED";
         internal const string ResyncRequired = "RESYNC_REQUIRED";
-        internal const string DocumentOpened = "DOCUMENT_OPENED";
+        internal const string WorldOpened = "WORLD_OPENED";
         internal const string BridgeAttached = "BRIDGE_ATTACHED";
 
         internal const string SourceAgent = "agent";
@@ -39,12 +42,32 @@ namespace Kodaxa.RoboVision.Editor
         private readonly LinkedList<JObject> _events = new LinkedList<JObject>();
         private string _uncertainReason;
 
-        internal RoboVisionJournal(string documentIncarnation)
+        internal RoboVisionJournal(string worldIncarnation)
         {
-            DocumentIncarnation = documentIncarnation;
+            WorldIncarnation = worldIncarnation;
+            JournalIncarnation = MintIncarnation();
         }
 
-        internal string DocumentIncarnation { get; private set; }
+        private static string MintIncarnation()
+        {
+            return "rvjournal:" + Guid.NewGuid();
+        }
+
+        /// <summary>Which editing context this history belongs to.</summary>
+        internal string WorldIncarnation { get; private set; }
+
+        /// <summary>
+        /// Which run of the journal this is, inside that world.
+        /// </summary>
+        /// <remarks>
+        /// A rebuilt bridge can wake up in the world it left — the editor's
+        /// scenes are still open and the host can verify it — but its history
+        /// is gone. Without a separate identity for the journal itself, a
+        /// cursor from before the reload would name a world that is genuinely
+        /// current and an epoch and sequence that both restarted at the same
+        /// numbers, and would resolve against a history it has never seen.
+        /// </remarks>
+        internal string JournalIncarnation { get; private set; }
         internal long Epoch { get; private set; } = 1;
         internal bool Certain { get; private set; } = true;
         internal long Sequence { get; private set; }
@@ -56,24 +79,23 @@ namespace Kodaxa.RoboVision.Editor
         /// </summary>
         /// <remarks>
         /// A bare sequence number is not a position. Sequence restarts at a new
-        /// certainty epoch and at a new document incarnation, so the same
-        /// integer names different moments in different worlds — and both epoch
-        /// counters start at 1, so an epoch alone does not separate them either.
+        /// certainty epoch, at a new journal and at a new world, so the same
+        /// integer names different moments in different histories — and every
+        /// one of those counters starts at 1, so no counter separates them
+        /// either. Only the two incarnations do.
         /// </remarks>
         internal string Cursor()
         {
-            return CursorPrefix + ":" + CursorDocument + ":" + Epoch + ":" + Sequence;
+            return CursorPrefix + ":" + Tail(JournalIncarnation) + ":" + Tail(WorldIncarnation)
+                + ":" + Epoch + ":" + Sequence;
         }
 
-        // The incarnation is "rvdoc:<guid>"; the prefix is dropped so a cursor
-        // stays four colon-separated fields and parses unambiguously.
-        private string CursorDocument
+        // Incarnations are "<kind>:<guid>"; the kind is dropped so a cursor
+        // stays five colon-separated fields and parses unambiguously.
+        private static string Tail(string incarnation)
         {
-            get
-            {
-                var split = DocumentIncarnation.IndexOf(':');
-                return split >= 0 ? DocumentIncarnation.Substring(split + 1) : DocumentIncarnation;
-            }
+            var split = incarnation.IndexOf(':');
+            return split >= 0 ? incarnation.Substring(split + 1) : incarnation;
         }
 
         /// <summary>Every cursor refusal says where to resume from.</summary>
@@ -90,9 +112,10 @@ namespace Kodaxa.RoboVision.Editor
         /// Check a cursor against this journal.
         /// </summary>
         /// <remarks>
-        /// What this establishes: the cursor is well formed, names the document
-        /// incarnation loaded now, names the current certainty epoch, and falls
-        /// inside the retained range. What it does not establish is issuance —
+        /// What this establishes: the cursor is well formed, names the world
+        /// that is open now and the journal that is running in it, names the
+        /// current certainty epoch, and falls inside the retained range. What
+        /// it does not establish is issuance —
         /// nothing is signed. That is deliberate for a read-only journal: a
         /// forged cursor reads events its caller could already read, while the
         /// checks that matter are about staleness, which a forger has no reason
@@ -107,23 +130,32 @@ namespace Kodaxa.RoboVision.Editor
                 throw Refuse("INVALID_PARAMS", "cursor must be a string", cursorToken);
 
             var parts = cursor.Split(':');
-            if (parts.Length != 4 || parts[0] != CursorPrefix)
+            if (parts.Length != 5 || parts[0] != CursorPrefix)
                 throw Refuse("INVALID_PARAMS",
-                    "cursor must look like " + CursorPrefix + ":<document>:<epoch>:<sequence>", cursorToken);
+                    "cursor must look like " + CursorPrefix + ":<journal>:<world>:<epoch>:<sequence>",
+                    cursorToken);
 
-            if (!Int64.TryParse(parts[2], out var epoch) || !Int64.TryParse(parts[3], out var sequence))
+            if (!Int64.TryParse(parts[3], out var epoch) || !Int64.TryParse(parts[4], out var sequence))
                 throw Refuse("INVALID_PARAMS", "cursor epoch and sequence must be integers", cursorToken);
             if (epoch < 1 || sequence < 0)
                 throw Refuse("INVALID_PARAMS", "cursor epoch and sequence are out of range", cursorToken);
 
-            // Order matters. The document is checked first because epoch numbers
-            // collide across documents — both start at 1 — so an epoch that
-            // matches proves nothing until the world it belongs to is settled.
-            if (!String.Equals(parts[1], CursorDocument, StringComparison.Ordinal))
-                throw Refuse("STALE_DOCUMENT",
-                    "that cursor names a document incarnation that is no longer loaded",
+            // Order matters, outermost scope first. Every counter in a cursor
+            // restarts at 1 in a new world and in a new journal, so a matching
+            // epoch proves nothing until both scopes are settled — and the two
+            // scopes fail for different reasons a client must act on
+            // differently, so they are separate codes rather than one.
+            if (!String.Equals(parts[2], Tail(WorldIncarnation), StringComparison.Ordinal))
+                throw Refuse("STALE_WORLD",
+                    "that cursor names an editing context that is no longer open",
                     cursorToken, true,
-                    new JObject { ["current_document_incarnation"] = DocumentIncarnation });
+                    new JObject { ["current_world_incarnation"] = WorldIncarnation });
+            if (!String.Equals(parts[1], Tail(JournalIncarnation), StringComparison.Ordinal))
+                throw Refuse("JOURNAL_REPLACED",
+                    "the world is still open but this journal did not write that cursor; "
+                    + "its history was rebuilt and is gone",
+                    cursorToken, true,
+                    new JObject { ["current_journal_incarnation"] = JournalIncarnation });
             if (epoch != Epoch)
                 throw Refuse("EPOCH_SUPERSEDED",
                     "the journal has opened a new certainty epoch since that cursor was current",
@@ -186,6 +218,59 @@ namespace Kodaxa.RoboVision.Editor
         }
 
         /// <summary>
+        /// A scene joined or left the world without the world being replaced.
+        /// </summary>
+        /// <remarks>
+        /// Opening a scene additively moves the fingerprint — the world now
+        /// contains a container it did not before — while producing no
+        /// object-level difference at all when that scene is empty. Without an
+        /// event for it the host would see state move with nothing to attribute
+        /// it to and would lose certainty over an ordinary, fully understood
+        /// editor action.
+        /// </remarks>
+        internal int RecordSceneMembership(JObject diff, long revision, string source, string request)
+        {
+            var written = 0;
+            foreach (var entry in (JArray)diff["scenes_loaded"])
+            {
+                Append(SceneLoaded, revision, source, null, request, (JObject)entry.DeepClone());
+                written++;
+            }
+            foreach (var entry in (JArray)diff["scenes_unloaded"])
+            {
+                Append(SceneUnloaded, revision, source, null, request, (JObject)entry.DeepClone());
+                written++;
+            }
+            return written;
+        }
+
+        /// <summary>
+        /// The same object, addressable by a name it did not have before.
+        /// </summary>
+        /// <remarks>
+        /// Saving an untitled scene is when a Unity object earns a durable
+        /// GlobalObjectId, retiring the session handle it had until then. The
+        /// object is not created and nothing is destroyed, and reporting it as
+        /// a delete and a create — which is what the object diff alone says —
+        /// tells the agent its world was demolished and rebuilt.
+        ///
+        /// The basis is carried with the event because this claim is only worth
+        /// anything if the host can say how it knows.
+        /// </remarks>
+        internal void RecordIdentityUpgrade(string previousId, string id, string reason, string basis,
+            long revision)
+        {
+            Append(IdentityUpgraded, revision, SourceHost, new[] { previousId, id }, null,
+                new JObject
+                {
+                    ["previous_id"] = previousId,
+                    ["id"] = id,
+                    ["reason"] = reason,
+                    ["basis"] = basis
+                });
+        }
+
+        /// <summary>
         /// Record that the host cannot account for a change.
         /// </summary>
         /// <remarks>
@@ -214,23 +299,31 @@ namespace Kodaxa.RoboVision.Editor
         }
 
         /// <summary>
-        /// Start again under a new document identity.
+        /// Start again: a different world, or the same world with no history.
         /// </summary>
         /// <remarks>
-        /// A scene swap and a rebuilt bridge both reach here: in each case the
-        /// journal now describes a world the previous history does not belong
-        /// to, and cursors from it must stop resolving.
+        /// A world replacement and a rebuilt bridge both reach here. The
+        /// journal incarnation rotates in both cases because the history is
+        /// gone in both cases, which is what a client's cursor depends on; the
+        /// world incarnation is passed in because only the reconciler can say
+        /// whether the editing context itself survived.
         /// </remarks>
-        internal void Rebind(string documentIncarnation, string reason)
+        internal void Rebind(string worldIncarnation, string reason)
         {
-            DocumentIncarnation = documentIncarnation;
+            WorldIncarnation = worldIncarnation;
+            JournalIncarnation = MintIncarnation();
             Epoch = 1;
             Certain = true;
             _uncertainReason = null;
             Sequence = 0;
             _events.Clear();
-            Append(reason == "load" ? DocumentOpened : BridgeAttached, 0, SourceHost, null, null,
-                new JObject { ["document_incarnation"] = documentIncarnation, ["reason"] = reason });
+            Append(reason == "load" ? WorldOpened : BridgeAttached, 0, SourceHost, null, null,
+                new JObject
+                {
+                    ["world_incarnation"] = worldIncarnation,
+                    ["journal_incarnation"] = JournalIncarnation,
+                    ["reason"] = reason
+                });
         }
 
         // ------------------------------------------------------------ reading
@@ -243,7 +336,8 @@ namespace Kodaxa.RoboVision.Editor
                 ["certain"] = Certain,
                 ["sequence"] = Sequence,
                 ["cursor"] = Cursor(),
-                ["document_incarnation"] = DocumentIncarnation,
+                ["world_incarnation"] = WorldIncarnation,
+                ["journal_incarnation"] = JournalIncarnation,
                 ["uncertain_reason"] = _uncertainReason,
                 ["retained"] = _events.Count
             };

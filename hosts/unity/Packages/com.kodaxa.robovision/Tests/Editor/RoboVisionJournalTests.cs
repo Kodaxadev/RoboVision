@@ -32,8 +32,8 @@ namespace Kodaxa.RoboVision.Editor.Tests
         {
             Harness.FreshScene();
             _rv = new Harness("journal");
-            // The scene swap FreshScene just performed is itself a document
-            // change; settle it so each test starts from a stable incarnation.
+            // The scene swap FreshScene just performed replaces the world;
+            // settle it so each test starts from a stable incarnation.
             _rv.Result("scene.describe");
         }
 
@@ -297,14 +297,15 @@ namespace Kodaxa.RoboVision.Editor.Tests
         }
 
         [Test]
-        public void ACursorFromAReplacedDocumentIsRefused()
+        public void ACursorFromAReplacedWorldIsRefused()
         {
             _rv.CreateObject("Resident");
             var stale = Cursor();
             var epochBefore = _rv.Result("scene.changes_since").Value<long>("epoch");
 
-            // A different loaded world. Epoch numbers collide across documents —
-            // both start at 1 — so the document is what has to distinguish them.
+            // A Single-mode load: nothing of the previous editing universe stays
+            // loaded. Epoch numbers collide across worlds — both start at 1 — so
+            // the world is what has to distinguish them.
             Harness.FreshScene();
             _rv.Result("scene.describe");
             Assert.That(_rv.Result("scene.changes_since").Value<long>("epoch"), Is.EqualTo(epochBefore),
@@ -312,38 +313,40 @@ namespace Kodaxa.RoboVision.Editor.Tests
 
             _rv.CreateObject("BrandNew");
             var refused = _rv.Call("scene.changes_since", new JObject { ["cursor"] = stale },
-                ok: false, code: "STALE_DOCUMENT");
+                ok: false, code: "STALE_WORLD");
             var data = (JObject)refused["error"]["data"];
             Assert.That(data.Value<string>("current_cursor"), Is.Not.Null.And.Not.Empty,
                 "the refusal did not say where to resume from");
-            Assert.That(data.Value<string>("current_document_incarnation"),
-                Is.EqualTo(_rv.Result("scene.describe").Value<string>("document_incarnation")));
+            Assert.That(data.Value<string>("current_world_incarnation"),
+                Is.EqualTo(_rv.Result("scene.describe").Value<string>("world_incarnation")));
         }
 
         /// <summary>
-        /// Saving gives the document a file. It does not load a different world.
+        /// Saving gives the document a file, and its objects a durable address.
         /// </summary>
         /// <remarks>
-        /// It does, in Unity specifically, change how an object is addressed: an
-        /// unsaved object has only a session handle, and saving is what earns it
-        /// a durable GlobalObjectId. That is a real, client-visible change and
-        /// is reported — unlike Blender, where identity is durable from the
-        /// start and saving changes nothing at all.
+        /// Nothing is loaded, so the world does not rotate. What does change is
+        /// how an object is addressed: an unsaved Unity object has only a
+        /// session handle, and saving is what earns it a GlobalObjectId. That is
+        /// real and a client has to be told — unlike Blender, where identity is
+        /// durable from the start and saving changes nothing at all.
         ///
-        /// How it is reported is a known gap, pinned here so that fixing it has
-        /// to be deliberate. An identity upgrade arrives as OBJECT_DELETED plus
-        /// OBJECT_CREATED, which says an object was destroyed and another built,
-        /// when one object simply became addressable. This is the Unity instance
-        /// of the audit requirement in CROSS_EDITOR_STATE.md §11.1: control-plane
-        /// identity changes must eventually be exposed as what they are.
+        /// It used to be told the wrong thing. The object diff can only say that
+        /// one id vanished and another appeared, and reported as a delete and a
+        /// create it says an object was destroyed and another built when one
+        /// object simply became addressable. The host can do better, and the
+        /// proof is what makes it allowed to: the retired session handle still
+        /// resolves to the live object, and that object reports the new id.
         /// </remarks>
         [Test]
-        public void SavingUpgradesIdentityWithoutLoadingADifferentDocument()
+        public void SavingUpgradesIdentityRatherThanDestroyingAndRebuilding()
         {
             var sessionId = _rv.CreateObject("Persisted");
             Assert.That(sessionId, Does.StartWith("unity:session:"),
                 "precondition: an unsaved object has only a session handle");
-            var incarnation = _rv.Result("scene.describe").Value<string>("document_incarnation");
+            var before = _rv.Result("scene.describe");
+            var incarnation = before.Value<string>("world_incarnation");
+            var revision = before.Value<long>("revision");
             var cursor = Cursor();
 
             var path = "Assets/RoboVisionJournalSaved.unity";
@@ -351,24 +354,31 @@ namespace Kodaxa.RoboVision.Editor.Tests
             try
             {
                 var after = _rv.Result("scene.describe");
-                Assert.That(after.Value<string>("document_incarnation"), Is.EqualTo(incarnation),
-                    "saving gave the document a file; it did not load a different world, so the "
-                    + "incarnation must not rotate");
+                Assert.That(after.Value<string>("world_incarnation"), Is.EqualTo(incarnation),
+                    "saving gave the document a file; it did not open a different editing "
+                    + "context, so the world must not rotate");
 
                 var events = EventsSince(cursor);
-                var ids = events.SelectMany(e => e["ids"]).Select(x => x.Value<string>()).ToList();
-                Assert.That(ids, Contains.Item(sessionId),
-                    "the retired session handle was not named, so a client holding it is not told");
-                Assert.That(ids.Any(id => id.StartsWith("unity:GlobalObjectId_")), Is.True,
+                Assert.That(Types(events), Is.EquivalentTo(new[] { RoboVisionJournal.IdentityUpgraded }),
+                    "a save reported something other than the identity upgrade it is: "
+                    + events.ToString(Newtonsoft.Json.Formatting.None));
+                Assert.That(Sources(events), Has.All.EqualTo(RoboVisionJournal.SourceHost),
+                    "re-addressing an object is the host's bookkeeping, not an authored edit");
+
+                var detail = (JObject)events[0]["detail"];
+                Assert.That(detail.Value<string>("previous_id"), Is.EqualTo(sessionId),
+                    "the retired handle was not named, so a client holding it is not told");
+                Assert.That(detail.Value<string>("id"), Does.StartWith("unity:GlobalObjectId_"),
                     "the durable identity the object acquired was not named");
-                Assert.That(Sources(events), Has.All.EqualTo(RoboVisionJournal.SourceEditor),
-                    "a save is not the agent's mutation");
-                // The known gap, asserted rather than glossed.
-                Assert.That(Types(events), Is.EquivalentTo(new[]
-                    {
-                        RoboVisionJournal.ObjectDeleted, RoboVisionJournal.ObjectCreated
-                    }),
-                    "an identity upgrade is reported as a delete and a create; see §11.1");
+                Assert.That(detail.Value<string>("basis"), Is.Not.Null.And.Not.Empty,
+                    "continuity was claimed without saying on what basis");
+
+                var ids = events.SelectMany(e => e["ids"]).Select(x => x.Value<string>()).ToList();
+                Assert.That(ids, Contains.Item(sessionId));
+                Assert.That(ids, Contains.Item(detail.Value<string>("id")));
+
+                Assert.That(after.Value<long>("revision"), Is.EqualTo(revision),
+                    "re-addressing an object moved the authored scene revision");
             }
             finally
             {
@@ -381,12 +391,13 @@ namespace Kodaxa.RoboVision.Editor.Tests
         {
             var current = Cursor();
             var parts = current.Split(':');
-            var ahead = parts[0] + ":" + parts[1] + ":" + parts[2] + ":" + (long.Parse(parts[3]) + 500);
+            var head = parts[0] + ":" + parts[1] + ":" + parts[2] + ":";
+            var ahead = head + parts[3] + ":" + (long.Parse(parts[4]) + 500);
 
             var cases = new JToken[]
             {
-                ahead, "", "nonsense", "rvcursor:a:b", "rvcursor:a:b:c",
-                parts[0] + ":" + parts[1] + ":0:1", JValue.CreateNull(), new JValue(7)
+                ahead, "", "nonsense", "rvcursor:a:b", "rvcursor:a:b:c", "rvcursor:a:b:c:d",
+                head + "0:1", head + "x:1", JValue.CreateNull(), new JValue(7)
             };
             foreach (var value in cases)
             {

@@ -101,6 +101,17 @@ namespace Kodaxa.RoboVision.Editor.Tests
                 report["fingerprint"] = Ok("scene.snapshot").Value<string>("fingerprint");
                 report["scene_path"] = ScenePath;
 
+                // Everything scoped to this editor session. A domain reload can
+                // keep the world, because the host can verify afterwards that
+                // the same context is still open and SessionState carries the
+                // previous identity across. A process exit clears SessionState
+                // with the process, so none of this may survive.
+                var journal = Ok("scene.changes_since");
+                report["bridge"] = described.Value<string>("bridge");
+                report["world_incarnation"] = described.Value<string>("world_incarnation");
+                report["journal_incarnation"] = journal.Value<string>("journal_incarnation");
+                report["cursor"] = journal.Value<string>("cursor");
+
                 var port = FreePort();
                 if (RoboVisionHost.Instance.Running) RoboVisionHost.Instance.Stop();
                 RoboVisionHost.Instance.Start(port);
@@ -186,12 +197,34 @@ namespace Kodaxa.RoboVision.Editor.Tests
                 Check("fingerprint_equivalent", fingerprint == state.Value<string>("fingerprint"),
                     "fingerprint changed across the restart");
 
-                // 6. The port the dead editor held must be bindable again.
+                // 6. Session identities must all be new, and positions into
+                // the dead process's journal must be refused rather than
+                // resolved against a history this process has never had.
+                var described = Ok("scene.describe");
+                var journal = Ok("scene.changes_since");
+                Check("bridge_reminted",
+                    described.Value<string>("bridge") != state.Value<string>("bridge"),
+                    "the rebuilt bridge reported the dead process's identity");
+                Check("world_reminted",
+                    described.Value<string>("world_incarnation") != state.Value<string>("world_incarnation"),
+                    "SessionState should die with the process, so the world cannot be resumed");
+                Check("journal_reminted",
+                    journal.Value<string>("journal_incarnation") != state.Value<string>("journal_incarnation"),
+                    "the journal claimed an identity whose history is gone");
+                var staleCursor = Call("scene.changes_since",
+                    new JObject { ["cursor"] = state.Value<string>("cursor") });
+                var cursorCode = staleCursor.Value<bool>("ok")
+                    ? "RESOLVED"
+                    : staleCursor["error"].Value<string>("code");
+                Check("stale_cursor_refused", cursorCode == "STALE_WORLD",
+                    "a cursor from the dead process was answered with " + cursorCode);
+
+                // 7. The port the dead editor held must be bindable again.
                 RoboVisionHost.Instance.Start(port);
                 Check("rebinds_previous_port", RoboVisionHost.Instance.Running,
                     "the new process could not bind the port the old one used");
 
-                // 7. The shipped Python client must be able to reconnect.
+                // 8. The shipped Python client must be able to reconnect.
                 // Recorded once: reporting the same fact as both a finding and a
                 // check made the harness print eight PASS lines for seven
                 // checks, and an inflated count is exactly the kind of evidence

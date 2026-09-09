@@ -15,7 +15,7 @@ def describe(params, runtime):
         "scene": bpy.context.scene.name_full,
         "revision": runtime.revision,
         "bridge": runtime.bridge,
-        "document_incarnation": runtime.document_incarnation,
+        "world_incarnation": runtime.world_incarnation,
         "document": runtime.document,
         "frame": int(bpy.context.scene.frame_current),
         "level": level,

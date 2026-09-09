@@ -35,125 +35,6 @@ namespace Kodaxa.RoboVision.Editor
             host.AddTool("transaction.rollback", p => host.Transactions.Rollback(p), mutating: true, stability: "alpha", transactionControl: true);
         }
 
-        /// <summary>Strip editor bookkeeping that is not authored state.</summary>
-        /// <remarks>
-        /// Two kinds of field are removed, for the same reason: they move when
-        /// nothing about the scene's contents has.
-        ///
-        /// scene.isDirty describes whether the editor thinks the scene needs
-        /// saving, and Unity flips it asynchronously after an edit. Hashing it
-        /// meant a fingerprint could move with no scene change at all, which the
-        /// host then reported as an out-of-band edit and refused to roll back on.
-        ///
-        /// The scene's name and path, and each object's scene path, say where
-        /// the document is stored. Saving an untitled scene fills all three in,
-        /// so hashing them made a save look like every object in the scene had
-        /// changed — a save is not an edit, and the journal said otherwise.
-        /// Scene membership is not lost by this: objects are nested under the
-        /// scene they belong to, so moving one between scenes still moves it
-        /// between arrays. All of these stay in the reported state, where they
-        /// are useful, and out of the hash, where they are actively harmful.
-        /// </remarks>
-        private static JToken HashableState(JObject state)
-        {
-            var copy = (JObject)state.DeepClone();
-            var scenes = copy["scenes"] as JArray;
-            if (scenes != null)
-            {
-                foreach (var scene in scenes.OfType<JObject>())
-                {
-                    scene.Remove("dirty");
-                    scene.Remove("name");
-                    scene.Remove("path");
-                    var objects = scene["objects"] as JArray;
-                    if (objects == null) continue;
-                    foreach (var obj in objects.OfType<JObject>()) obj.Remove("scene");
-                }
-            }
-            return copy;
-        }
-
-        internal static string ComputeFingerprint()
-        {
-            return CaptureRead().Fingerprint;
-        }
-
-        /// <summary>One authoritative read: the scene state and its fingerprint.</summary>
-        /// <remarks>
-        /// Taken together deliberately. Capturing the state and hashing it in
-        /// two separate passes would let the scene move between them, and the
-        /// pair would then describe two different moments.
-        /// </remarks>
-        internal static SceneRead CaptureRead()
-        {
-            var state = CaptureState();
-            return new SceneRead
-            {
-                State = state,
-                Fingerprint = HashToken(HashableState(state)),
-                DocumentSignature = DocumentSignature()
-            };
-        }
-
-        /// <summary>Which world is loaded, independent of what is in it.</summary>
-        /// <remarks>
-        /// Read rather than subscribed to. sceneOpened and the prefab stage
-        /// callbacks are notifications like any other, and the whole point of
-        /// reconciliation is that identity of the loaded world is established by
-        /// looking, not by having been told.
-        ///
-        /// It is the set of loaded scene handles, and deliberately not their
-        /// paths. A handle identifies a loaded instance for the life of the
-        /// session, which is exactly the scope a document incarnation has: an
-        /// unsaved scene has no path at all, and two successive untitled scenes
-        /// would share the empty one. Including the path would also make
-        /// *saving* look like loading a different world — the file the document
-        /// is stored in changed, but nothing was loaded, so the incarnation must
-        /// not rotate. Which file it is belongs in `scene.describe`, not here.
-        /// </remarks>
-        internal static string DocumentSignature()
-        {
-            var stage = UnityEditor.SceneManagement.PrefabStageUtility.GetCurrentPrefabStage();
-            if (stage != null && stage.scene.IsValid())
-                return "prefab:" + stage.scene.handle;
-
-            var parts = new List<string>();
-            for (var i = 0; i < SceneManager.sceneCount; i++)
-            {
-                var scene = SceneManager.GetSceneAt(i);
-                if (!scene.isLoaded) continue;
-                parts.Add(scene.handle.ToString());
-            }
-            parts.Sort(StringComparer.Ordinal);
-            return "scenes:" + String.Join("|", parts);
-        }
-
-        /// <summary>Object-level created, deleted and changed between two reads.</summary>
-        /// <remarks>
-        /// The one diff implementation. `scene.diff` answers a client with it and
-        /// reconciliation attributes changes with it, so the two can never come
-        /// to different conclusions about what moved.
-        /// </remarks>
-        internal static JObject DiffReads(SceneRead before, SceneRead after)
-        {
-            var beforeObjects = FlattenObjects(before.State);
-            var afterObjects = FlattenObjects(after.State);
-            var created = afterObjects.Keys.Except(beforeObjects.Keys).OrderBy(x => x, StringComparer.Ordinal)
-                .Select(x => new JObject { ["id"] = x, ["name"] = afterObjects[x].Value<string>("name") });
-            var deleted = beforeObjects.Keys.Except(afterObjects.Keys).OrderBy(x => x, StringComparer.Ordinal)
-                .Select(x => new JObject { ["id"] = x, ["name"] = beforeObjects[x].Value<string>("name") });
-            var changed = beforeObjects.Keys.Intersect(afterObjects.Keys)
-                .Where(x => !JToken.DeepEquals(beforeObjects[x], afterObjects[x]))
-                .OrderBy(x => x, StringComparer.Ordinal)
-                .Select(x => new JObject { ["id"] = x, ["before"] = beforeObjects[x], ["after"] = afterObjects[x] });
-            return new JObject
-            {
-                ["created"] = new JArray(created),
-                ["deleted"] = new JArray(deleted),
-                ["changed"] = new JArray(changed)
-            };
-        }
-
         private static SceneRead ReadOf(JObject stored)
         {
             return new SceneRead
@@ -169,7 +50,7 @@ namespace Kodaxa.RoboVision.Editor
             {
                 ["revision"] = host.Revision,
                 ["bridge"] = host.Bridge,
-                ["document_incarnation"] = host.DocumentIncarnation,
+                ["world_incarnation"] = host.WorldIncarnation,
                 ["scenes"] = host.CurrentRead.State["scenes"]
             };
         }
@@ -185,7 +66,15 @@ namespace Kodaxa.RoboVision.Editor
             var state = (JObject)read.State.DeepClone();
             var fingerprint = read.Fingerprint;
             var id = "snap:" + Guid.NewGuid();
-            var snapshot = new JObject { ["fingerprint"] = fingerprint, ["state"] = state };
+            // Bound to the world it was taken in. A snapshot is evidence about
+            // one editing context, and diffing it against another would compare
+            // two universes and call the result a change.
+            var snapshot = new JObject
+            {
+                ["fingerprint"] = fingerprint,
+                ["state"] = state,
+                ["world_incarnation"] = host.WorldIncarnation
+            };
             Snapshots[id] = snapshot;
             SnapshotOrder.Enqueue(id);
             while (SnapshotOrder.Count > 32) Snapshots.Remove(SnapshotOrder.Dequeue());
@@ -240,10 +129,20 @@ namespace Kodaxa.RoboVision.Editor
             var id = parameters.Value<string>("from_snapshot");
             if (String.IsNullOrWhiteSpace(id)) throw new RoboVisionException("INVALID_PARAMS", "from_snapshot is required");
             if (!Snapshots.TryGetValue(id, out var before)) throw new RoboVisionException("NOT_FOUND", "snapshot not found: " + id);
+            var takenIn = before.Value<string>("world_incarnation");
+            if (takenIn != null && takenIn != host.WorldIncarnation)
+                throw new RoboVisionException("STALE_WORLD",
+                    "that snapshot was taken in an editing context that is no longer open", true,
+                    new JObject
+                    {
+                        ["snapshot"] = id,
+                        ["taken_in"] = takenIn,
+                        ["current_world_incarnation"] = host.WorldIncarnation
+                    });
             // The dispatcher reconciled authoritatively before this handler ran,
             // so the host's baseline is the scene as it is now.
             var after = host.CurrentRead;
-            var diff = DiffReads(ReadOf(before), after);
+            var diff = RoboVisionSceneRead.DiffReads(ReadOf(before), after);
             diff["from_snapshot"] = id;
             diff["before_fingerprint"] = before.Value<string>("fingerprint");
             diff["after_fingerprint"] = after.Fingerprint;
@@ -255,7 +154,7 @@ namespace Kodaxa.RoboVision.Editor
         private static JObject InspectObject(JObject parameters)
         {
             var go = ResolveGameObject(parameters.Value<string>("object"));
-            return ObjectState(go);
+            return RoboVisionSceneRead.ObjectState(go);
         }
 
         private static JObject CreateObject(JObject parameters)
@@ -264,13 +163,13 @@ namespace Kodaxa.RoboVision.Editor
             var go = new GameObject(name);
             Undo.RegisterCreatedObjectUndo(go, "RoboVision create " + name);
             ApplyTransform(go.transform, parameters);
-            return ObjectState(go);
+            return RoboVisionSceneRead.ObjectState(go);
         }
 
         private static JObject DeleteObject(JObject parameters)
         {
             var go = ResolveGameObject(parameters.Value<string>("object"));
-            var id = IdFor(go, out _);
+            var id = RoboVisionSceneRead.IdFor(go, out _);
             var name = go.name;
             Undo.DestroyObjectImmediate(go);
             return new JObject { ["deleted"] = new JObject { ["id"] = id, ["name"] = name } };
@@ -280,7 +179,7 @@ namespace Kodaxa.RoboVision.Editor
         {
             var go = ResolveGameObject(parameters.Value<string>("object"));
             ApplyTransform(go.transform, parameters);
-            return ObjectState(go);
+            return RoboVisionSceneRead.ObjectState(go);
         }
 
         private static void ApplyTransform(Transform transform, JObject parameters)
@@ -332,135 +231,5 @@ namespace Kodaxa.RoboVision.Editor
             throw new RoboVisionException("INVALID_PARAMS", "object must be a RoboVision Unity id");
         }
 
-        internal static string IdFor(UnityEngine.Object obj, out bool persistent)
-        {
-            var gid = GlobalObjectId.GetGlobalObjectIdSlow(obj);
-            var text = gid.ToString();
-            if (!text.StartsWith("GlobalObjectId_V1-0-", StringComparison.Ordinal))
-            {
-                persistent = true;
-                return "unity:" + text;
-            }
-            persistent = false;
-            return RoboVisionSessionHandles.Token(obj);
-        }
-
-        private static JObject SceneState(UnityEngine.SceneManagement.Scene scene, string kind)
-        {
-            var objects = scene.GetRootGameObjects()
-                .SelectMany(root => root.GetComponentsInChildren<Transform>(true))
-                .Select(t => t.gameObject)
-                .Distinct()
-                .Select(ObjectState)
-                .OrderBy(o => o.Value<string>("id"), StringComparer.Ordinal);
-            return new JObject
-            {
-                ["name"] = scene.name,
-                ["path"] = scene.path,
-                ["build_index"] = scene.buildIndex,
-                ["dirty"] = scene.isDirty,
-                ["kind"] = kind,
-                ["objects"] = new JArray(objects)
-            };
-        }
-
-        private static JObject CaptureState()
-        {
-            // A Prefab Stage edits its contents in a preview scene that
-            // SceneManager does not enumerate. Reporting only SceneManager's
-            // scenes meant that with a prefab open for editing the host
-            // described an empty project, so an agent would believe there was
-            // nothing there and create objects in the wrong place.
-            var stage = UnityEditor.SceneManagement.PrefabStageUtility.GetCurrentPrefabStage();
-            if (stage != null && stage.scene.IsValid())
-            {
-                var staged = SceneState(stage.scene, "prefab_stage");
-                staged["prefab_asset_path"] = stage.assetPath;
-                return new JObject { ["scenes"] = new JArray { staged } };
-            }
-
-            var scenes = new JArray();
-            for (var i = 0; i < SceneManager.sceneCount; i++)
-            {
-                var scene = SceneManager.GetSceneAt(i);
-                if (!scene.isLoaded) continue;
-                scenes.Add(SceneState(scene, "scene"));
-            }
-            return new JObject { ["scenes"] = scenes };
-        }
-
-        private static JObject ObjectState(GameObject go)
-        {
-            var id = IdFor(go, out var persistent);
-            var t = go.transform;
-            var r = t.localRotation;
-            var components = go.GetComponents<Component>().Where(component => component != null).ToArray();
-            var componentTypes = components.Select(component => component.GetType().FullName).OrderBy(name => name, StringComparer.Ordinal);
-            var componentState = components.Select(ComponentState).OrderBy(state => state.Value<string>("id"), StringComparer.Ordinal);
-            return new JObject
-            {
-                ["id"] = id,
-                ["identity_persistent"] = persistent,
-                ["name"] = go.name,
-                ["scene"] = go.scene.path,
-                ["active"] = go.activeSelf,
-                ["layer"] = go.layer,
-                ["tag"] = go.tag,
-                ["parent"] = t.parent ? IdFor(t.parent.gameObject, out _) : null,
-                ["local_position"] = new JArray(t.localPosition.x, t.localPosition.y, t.localPosition.z),
-                ["local_rotation"] = new JArray(r.x, r.y, r.z, r.w),
-                ["local_scale"] = new JArray(t.localScale.x, t.localScale.y, t.localScale.z),
-                ["components"] = new JArray(componentTypes),
-                ["component_state"] = new JArray(componentState)
-            };
-        }
-
-        private static JObject ComponentState(Component component)
-        {
-            var id = IdFor(component, out var persistent);
-            string serialized;
-            try
-            {
-                serialized = EditorJsonUtility.ToJson(component, false) ?? String.Empty;
-            }
-            catch (Exception ex)
-            {
-                // A component that Unity cannot serialize must still perturb the
-                // scene fingerprint deterministically instead of silently
-                // disappearing from transaction/revision accounting.
-                serialized = "<serialization-error>:" + ex.GetType().FullName + ":" + ex.Message;
-            }
-            return new JObject
-            {
-                ["id"] = id,
-                ["identity_persistent"] = persistent,
-                ["type"] = component.GetType().FullName,
-                ["serialized_sha256"] = HashString(serialized)
-            };
-        }
-
-        private static Dictionary<string, JObject> FlattenObjects(JObject state)
-        {
-            var result = new Dictionary<string, JObject>(StringComparer.Ordinal);
-            foreach (var scene in (JArray)state["scenes"])
-                foreach (var item in (JArray)scene["objects"])
-                {
-                    var obj = (JObject)item;
-                    result[obj.Value<string>("id")] = obj;
-                }
-            return result;
-        }
-
-        private static string HashString(string value)
-        {
-            var bytes = Encoding.UTF8.GetBytes(value ?? String.Empty);
-            using (var sha = SHA256.Create())
-                return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
-        }
-
-        private static string HashToken(JToken token)
-        {
-            return HashString(token.ToString(Formatting.None));
-        }
     }
 }

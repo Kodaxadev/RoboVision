@@ -71,7 +71,7 @@ def phase_one() -> None:
                 "mesh_revision": mesh_revision,
                 "fingerprint": rv.fingerprint(),
                 "bridge": described["bridge"],
-                "document_incarnation": described["document_incarnation"],
+                "world_incarnation": described["world_incarnation"],
                 "revision": described["revision"],
                 "port": port,
                 "listening": rv.runtime.running,
@@ -111,7 +111,7 @@ def phase_two() -> None:
         "a new process reported the previous bridge identity",
     )
     expect(
-        described["document_incarnation"] != state["document_incarnation"],
+        described["world_incarnation"] != state["world_incarnation"],
         "a new process reported the previous document incarnation",
     )
     expect(described["revision"] == 0, f"the revision must reset in a new process, got {described['revision']}")

@@ -32,99 +32,17 @@ fault (§6), not silence.
 
 ## 1. Identity is layered, not one id
 
-Collapsing lifecycle into one id loses exactly the distinctions that make stale
-state detectable. Eight levels. Two of them were previously conflated under
-"runtime incarnation", which hid the difference between *the bridge was
-reloaded* and *a different file is open*; they are separate now.
+Nine levels, moved to [IDENTITY.md](IDENTITY.md) with the rules for what rotates
+when, in which host, and on what evidence — including §1.1 document identity and
+forks, §1.2 control-plane metadata, and §1.3 what counts as a different editing
+context.
 
-| level | identifier | rotates when | notes |
-| --- | --- | --- | --- |
-| workspace | `rvws:<uuid>` | a different RoboVision project context is adopted | the larger context a set of documents belongs to |
-| document | `rvdocid:<uuid>` | a genuinely different document is authored | persisted inside the file; see §1.1 |
-| host process | `rvproc:<uuid>` | the editor process starts | minted per process, never persisted |
-| bridge incarnation | `rvbridge:<uuid>` | add-on disable/enable, add-on reload, Unity domain or assembly reload, bridge restart | the loaded RoboVision runtime itself |
-| document incarnation | `rvdoc:<uuid>` | a document is opened, reopened or replaced | one loaded state universe, even if the bridge never reloaded |
-| scene revision | `int`, monotonic | authoritative scene state changes | resets with the document incarnation |
-| object identity | `b3d:<uuid>` / `unity:GlobalObjectId_*` | never, for saved objects | survives restart (asserted) |
-| mesh revision | `int`, monotonic | editable mesh topology changes | stored with the mesh, survives save |
-| observation | `rvobs:<uuid>` | every capture | bound to the document incarnation it was taken in |
-
-The two that were conflated:
-
-- **bridge incarnation** answers *is the code I am talking to the same code?*
-  Reloading the add-on rotates it while the open file is untouched.
-- **document incarnation** answers *is this the same loaded world?* Opening a
-  file rotates it while the bridge keeps running, its sockets stay bound and its
-  Python module state survives.
-
-They rotate independently, and an agent needs both: a handle from before an
-add-on reload is void for a different reason than a handle from before a file
-load, and conflating them makes one of those errors unreportable.
-
-The system can then answer: *this decision came from observation O, in document
-incarnation D of document W, at scene revision S and mesh revision M, through
-bridge B in process P.*
-
-**Owed errors.** `STALE_BRIDGE` when a request carries an `rvbridge` that is no
-longer loaded. `STALE_DOCUMENT` when it carries an `rvdoc` that is no longer the
-open world. `WRONG_DOCUMENT` when it names a document this host does not have
-open. All distinct from `NOT_FOUND`, which means the object is missing from a
-world that *is* current.
-
-## 1.1 Document identity, copies and forks
-
-**Not yet implemented, and deliberately conservative.** Persisting an id inside a
-file means copies of the file carry copies of the id, so the design has to say
-what happens before anything is persisted.
-
-The document record stored in the file is `{ document_id, last_known_path }`.
-Path is recorded not as identity but as evidence for the fork check below.
-
-| event | document id | why |
-| --- | --- | --- |
-| Save (same path) | preserved | the same document, written again |
-| Save As (new path) | **new id minted**, previous recorded as `forked_from` | the original file still exists on disk and is still that document; two live files must not share one identity |
-| Save a Copy | in-memory document keeps its id; the copy on disk carries a duplicate until opened | unavoidable — nothing runs at copy time |
-| filesystem copy, rename or move | undetectable at copy time | resolved on open, below |
-| open, `last_known_path` equals the file's path | preserved | the ordinary case |
-| open, `last_known_path` differs | **new id minted**, previous recorded as `forked_from`, host reports `document_forked` | a move and a copy are indistinguishable from the file alone, so the safe reading is "a different document" |
-
-A move therefore costs a new id by default. That is the conservative direction:
-wrongly minting a new id makes a client re-observe, while wrongly sharing one
-makes two files silently the same document. A client that knows a move happened
-can say so explicitly:
-
-```text
-document.claim_identity(previous_document_id) -> ok | CLAIM_REFUSED
-```
-
-**Concurrent open of two files carrying the same id** is not solved by anything
-in the file. Two editor processes can each open a copy and both believe they are
-that document. Detection requires coordination outside the documents — a
-lock or registry entry keyed by `document_id` that a host takes on open and
-releases on close, so the second host sees the id already claimed and reports
-`DOCUMENT_ID_IN_USE` with the holder's process identity.
-
-Explicitly **not claimed**: that a copied `.blend` can be detected by the
-existing object duplicate-id repair. That mechanism repairs collisions *within
-one open file* and says nothing about two files on disk. Any copy detection
-adopted here must be proven by its own test before it is claimed, and the
-path-mismatch rule above is the only mechanism currently proposed.
-
-## 1.2 Control-plane metadata is not authored state
-
-RoboVision stores its own bookkeeping on the datablocks it addresses:
-`_robovision_id` on the object, `_robovision_mesh_revision` and
-`_robovision_topology` on the mesh. These are control-plane metadata, not
-something a user authored, and they are excluded from the authored custom
-properties a snapshot reports. Without that exclusion the host's own bookkeeping
-would appear as user data and minting an id would read as a scene edit.
-
-The exclusion is of the *storage*, not the values. Identity and mesh revision
-still reach the fingerprint through their canonical fields — `id`, and
-`mesh.revision` — deliberately, because an object whose identity changed is not
-the same object. Writing one of these properties to the value it already holds
-moves nothing.
+The short version: **workspace**, **document identity**, **host process**,
+**bridge incarnation**, **world / edit-context incarnation**, **journal
+incarnation**, **scene revision**, **object identity**, **mesh revision**,
+**observation**. Each answers a question the others cannot, so the system can
+say: *this decision came from observation O, in world incarnation D of document
+W, at scene revision S and mesh revision M, through bridge B in process P.*
 
 ## 2. Addressing a host
 
@@ -204,7 +122,7 @@ authoritatively before it is allowed to run.
 ## 6. The journal, and sticky uncertainty
 
 An agent polls `scene.changes_since(cursor)` rather than re-reading the scene.
-Cursors name the document incarnation and certainty epoch they were issued in,
+Cursors name the world incarnation and certainty epoch they were issued in,
 losing certainty is sticky, one reconciliation path attributes every change, and
 scene revision tracks state rather than commands run. The full contract is in
 [JOURNAL.md](JOURNAL.md).
@@ -300,24 +218,34 @@ regression fixture, which is what the Blender and Unity gates already do by hand
 Control-plane metadata is excluded from *authored* state (§1.2), which is
 correct, and it leaves a gap the audit journal has to close rather than inherit.
 
-Measured today: deleting an object's `_robovision_id` and reading the scene again
-mints a **different** id. The fingerprint moves, the scene revision advances, and
-the change is journalled as `OBJECT_DELETED` for the old id plus `OBJECT_CREATED`
-for the new one, both attributed to `editor`. No object was created or deleted —
-one object's identity was re-minted — and `identity_repairs` reported nothing.
+Both measured cases are closed, and what closed them is the rule the audit
+journal inherits rather than reinvents: an identity transition is reported as
+one when the host can prove it, and not claimed at all when it cannot.
 
-Unity has the same shape for a different reason. An unsaved object has only a
-session handle; saving is what earns it a durable `GlobalObjectId`. That is a
-real, client-visible change — unlike Blender, where identity is durable from the
-start and saving changes nothing — but it too arrives as `OBJECT_DELETED` plus
-`OBJECT_CREATED`, saying an object was destroyed and another built when one
-object simply became addressable.
+**Blender.** Deleting an object's `_robovision_id` used to mint a different id,
+which reached the client as `OBJECT_DELETED` plus `OBJECT_CREATED` for an object
+that never went anywhere. The session owner registry knows which id this live
+object already owns, so the property is written back and the event is
+`IDENTITY_REPAIRED`, source `host`, carrying the basis for the claim. The public
+id does not change, so no authored state moved.
 
-Not redesigned here. Recorded as a requirement on the audit and replay work: an
-audit record must expose identity minting, repair and upgrade, and control-plane
-metadata changes generally, as what they are, distinctly from authored scene
-changes. A replay driven by the current events would delete and recreate an
-object that never moved.
+**Unity.** An unsaved object has only a session handle, and saving is what earns
+it a durable `GlobalObjectId`. The public address really does change, and the
+retired handle still resolves to the same live object, so the pair is lifted out
+of the object diff and reported as `IDENTITY_UPGRADED` with `previous_id`, `id`
+and the basis.
+
+Two events, not three, because a third would be a claim without evidence. Where
+continuity cannot be proven — a property removed from the file itself, an id
+minted after a reopen, a session handle that died with its domain — nothing is
+linked and the delete and create stand, which is what the host actually knows.
+
+Neither advances the scene revision: that counter names authored state, and
+re-addressing an object is the host's bookkeeping. **Still owed by the audit
+work:** a control-plane revision or equivalent sequence of its own, so a client
+can tell "nothing has happened" from "nothing authored has happened", and an
+audit record that exposes control-plane metadata changes generally rather than
+only these two.
 
 ## 12. Lifecycle invalidation
 
@@ -325,7 +253,7 @@ object that never moved.
 is discarded, `invalidate` means existing handles must now fail rather than
 resolve.
 
-| boundary | workspace | document id | process | bridge | document incarnation | scene rev | object id | mesh rev | mesh handle | transaction | journal seq | idempotency | observation |
+| boundary | workspace | document id | process | bridge | world incarnation | scene rev | object id | mesh rev | mesh handle | transaction | journal seq | idempotency | observation |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | in-session edit | keep | keep | keep | keep | keep | bump | keep | bump on topology | revision-scoped | keep | continue | keep | keep |
 | undo / redo | keep | keep | keep | keep | keep | bump | keep | bump | invalidate | contaminate | continue, uncertain | keep | keep |
@@ -334,29 +262,42 @@ resolve.
 | reopen same document | keep | keep | keep | keep | **new** | reset | keep | keep | invalidate | abandon | reset | drop | drop |
 | load a different document | keep | keep (that file's own) | keep | keep | **new** | reset | durable only | that file's own | invalidate | abandon | reset | drop | drop |
 | add-on disable/enable or reload | keep | keep | keep | **new** | **new** | reset | keep | keep | invalidate | drop | reset | drop | drop |
-| Unity domain / assembly reload | keep | keep | keep | **new** | **new** | reset | keep | keep | invalidate | orphan, then adopt (§4.1) | reset | drop | drop |
+| Unity domain / assembly reload | keep | keep | keep | **new** | keep if verified (§1.3) | resume | keep | keep | invalidate | orphan, then adopt (§4.1) | reset | drop | drop |
 | editor process restart | keep | keep | **new** | **new** | **new** | reset | durable only | keep | invalidate | drop | reset | drop | drop |
 
 Two rows deserve their reasoning.
 
-**Reopening the same document** rotates the document incarnation but not the
+**Reopening the same document** rotates the world incarnation but not the
 bridge: the same code is running, its sockets are still bound, and its module
 state survived. Everything scoped to the loaded world is void; everything scoped
 to the code is not.
 
-**A bridge reload rotates the document incarnation too**, in both editors. The
-open file is untouched, so it is tempting to keep it — but the document
-incarnation lives in the bridge's own memory, and a rebuilt bridge has no way to
-learn what the previous one had minted. Claiming continuity it cannot establish
-would be exactly the kind of false evidence the rest of this document exists to
-prevent. A client must therefore treat a bridge rotation as invalidating
-document-scoped handles as well. Unity's domain reload keeps the transaction —
-orphaned, then adopted per §4.1 — because the scene it describes is still there,
-which is the one thing that does survive.
+**A bridge reload does not have to rotate the world**, and the two hosts differ
+here for a reason that is about evidence rather than taste. The open file is
+untouched either way; the question is whether the rebuilt bridge can *prove* it
+is looking at the world the previous one left.
 
-Both hosts implement the two incarnations now. In Unity the bridge is minted by
-the host singleton's constructor, so a domain or assembly reload rotates it by
-construction, and the document incarnation follows the loaded scene set.
+Unity can. `SessionState` survives an assembly reload and dies with the process,
+so the previous world identity crosses the reload, and the editing context is
+read back out of the editor and has to match it exactly before it is adopted —
+measured, not assumed: the loaded scene handles are identical either side of a
+play mode round trip. The bridge is new, the journal is new and its cursors are
+refused as `JOURNAL_REPLACED`, but durable references keep resolving and the
+scene revision resumes. Blender cannot: an add-on reload takes the module's own
+memory with it and leaves nothing session-scoped to verify against — a custom
+property would be authored state, and the file may not even be saved — so it
+rotates the world and says why. Claiming continuity a host cannot establish
+would be exactly the kind of false evidence the rest of this document exists to
+prevent.
+
+Unity's domain reload keeps the transaction — orphaned, then adopted per §4.1 —
+because the scene it describes is still there, which is the one thing that does
+survive.
+
+All three incarnations are implemented in both hosts now. In Unity the bridge is
+minted by the host singleton's constructor, so a domain or assembly reload
+rotates it by construction; the world follows the editing context as defined in
+§1.3, and the journal rotates whenever its history restarts.
 
 Evidence today. Blender: save, reopen, load-other and process restart are
 asserted by `tests/blender/lifecycle_document.py` and

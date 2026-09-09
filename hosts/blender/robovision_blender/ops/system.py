@@ -54,7 +54,7 @@ def hello(_params, runtime):
         "revision": runtime.revision,
         "bridge": runtime.bridge,
         "journal": runtime.journal.state(),
-        "document_incarnation": runtime.document_incarnation,
+        "world_incarnation": runtime.world_incarnation,
         "document": runtime.document,
         "capability_count": len(live_capabilities),
         "capabilities": live_capabilities,

@@ -61,9 +61,9 @@ def main() -> None:
     before_save = rv.fingerprint()
     described_a = rv.result("scene.describe")
     bridge_a = described_a["bridge"]
-    document_a = described_a["document_incarnation"]
+    document_a = described_a["world_incarnation"]
     expect(bridge_a.startswith("rvbridge:"), f"no bridge identity reported: {bridge_a}")
-    expect(document_a.startswith("rvdoc:"), f"no document incarnation reported: {document_a}")
+    expect(document_a.startswith("rvworld:"), f"no document incarnation reported: {document_a}")
 
     bpy.ops.wm.save_as_mainfile(filepath=str(DOC_A))
     expect(DOC_A.exists(), "the document did not save")
@@ -94,7 +94,7 @@ def main() -> None:
         described["document"] and Path(described["document"]).name == DOC_A.name,
         f"the host reports the wrong document: {described['document']}",
     )
-    document_reopened = described["document_incarnation"]
+    document_reopened = described["world_incarnation"]
     expect(
         document_reopened != document_a,
         "reopening a document is a new loaded world; the document incarnation must change",
@@ -115,7 +115,7 @@ def main() -> None:
     swapped = rv.result("scene.describe")
 
     expect(
-        swapped["document_incarnation"] not in (document_a, document_reopened),
+        swapped["world_incarnation"] not in (document_a, document_reopened),
         "loading a different document must mint a new document incarnation",
     )
     expect(
@@ -194,7 +194,7 @@ def main() -> None:
         "an id minted before the first save stopped resolving after it",
     )
     expect(
-        first_saved["document_incarnation"] == unsaved["document_incarnation"],
+        first_saved["world_incarnation"] == unsaved["world_incarnation"],
         "saving is not a load; the document incarnation must not rotate",
     )
 
@@ -207,7 +207,7 @@ def main() -> None:
         f"the host kept the previous path after Save As: {saved_as['document']}",
     )
     expect(
-        saved_as["document_incarnation"] == first_saved["document_incarnation"],
+        saved_as["world_incarnation"] == first_saved["world_incarnation"],
         "Save As loads nothing; the document incarnation must not rotate",
     )
     expect(
@@ -219,7 +219,7 @@ def main() -> None:
     seen_incarnations = []
     for _ in range(3):
         bpy.ops.wm.open_mainfile(filepath=str(DOC_A))
-        seen_incarnations.append(rv2.result("scene.describe")["document_incarnation"])
+        seen_incarnations.append(rv2.result("scene.describe")["world_incarnation"])
     expect(
         len(set(seen_incarnations)) == 3,
         f"reopening the same document reused an incarnation id: {seen_incarnations}",
@@ -237,7 +237,7 @@ def main() -> None:
     # ------------------------------- a handle from a closed document incarnation
     stale_snapshot = rv2.result("scene.snapshot")["snapshot"]
     bpy.ops.wm.open_mainfile(filepath=str(DOC_A))
-    rv2.call("scene.diff", {"from_snapshot": stale_snapshot}, ok=False, code="STALE_DOCUMENT")
+    rv2.call("scene.diff", {"from_snapshot": stale_snapshot}, ok=False, code="STALE_WORLD")
 
     # ------------------------------------------- a reattached bridge is a new one
     # Detach and reattach only. The module stays loaded and every function
@@ -253,7 +253,7 @@ def main() -> None:
         "reattaching the bridge must mint a new bridge identity",
     )
     expect(
-        reattached["document_incarnation"] != round_trip["document_incarnation"],
+        reattached["world_incarnation"] != round_trip["world_incarnation"],
         "a rebuilt bridge cannot know the previous document incarnation and must "
         "not claim continuity it has no way to establish",
     )
@@ -265,7 +265,7 @@ def main() -> None:
                 f"bridge {bridge_a}",
                 f"document_a {document_a}",
                 f"document_reopened {document_reopened}",
-                f"document_after_swap {swapped['document_incarnation']}",
+                f"world_after_swap {swapped['world_incarnation']}",
                 f"owner_registry_after_swap {len(owners)}",
             ]
         )

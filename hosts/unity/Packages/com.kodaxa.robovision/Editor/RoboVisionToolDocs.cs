@@ -47,7 +47,7 @@ namespace Kodaxa.RoboVision.Editor
 
         private static JObject Vec3() => ArraySchema(NumberSchema(), 3, 3);
         private static JObject Quat() => ArraySchema(NumberSchema(), 4, 4);
-        private static JObject ObjectRef() => StringSchema("RoboVision Unity id: persistent unity:GlobalObjectId_* when available, otherwise an opaque session handle unity:session:<n> that does not survive a domain reload");
+        private static JObject ObjectRef() => StringSchema("RoboVision Unity id: persistent unity:GlobalObjectId_* when available, otherwise an opaque session handle unity:session:<scope>:<n>, scoped to the loaded domain and never valid after a reload");
 
         private static JObject ObjectSchema(JObject properties = null, params string[] required)
         {
