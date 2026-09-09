@@ -1,6 +1,7 @@
 using System;
 using NUnit.Framework;
 using Newtonsoft.Json.Linq;
+using UnityEditor;
 using UnityEditor.SceneManagement;
 
 namespace Kodaxa.RoboVision.Editor.Tests
@@ -133,9 +134,26 @@ namespace Kodaxa.RoboVision.Editor.Tests
         }
 
         /// <summary>A deterministic, empty single scene.</summary>
+        /// <remarks>
+        /// NewScene is an edit-mode operation and throws during play mode. A
+        /// fixture whose setup runs while the editor is still transitioning out
+        /// of play would fail for that reason rather than for anything it meant
+        /// to test, and the scene is restored on exit anyway.
+        /// </remarks>
         internal static void FreshScene()
         {
-            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            if (EditorApplication.isPlayingOrWillChangePlaymode) return;
+            try
+            {
+                EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            }
+            catch (InvalidOperationException)
+            {
+                // The framework re-enters setup while the editor is still
+                // transitioning out of play mode, where the play flag is already
+                // clear but NewScene still refuses. The scene is restored on exit
+                // anyway, so this is not something a fixture should fail on.
+            }
         }
     }
 }

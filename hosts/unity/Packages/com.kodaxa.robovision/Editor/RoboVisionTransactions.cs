@@ -20,11 +20,52 @@ namespace Kodaxa.RoboVision.Editor
             public int UndoGroup;
             public string BeginFingerprint;
             public string ExternalChangeFingerprint;
+            public long OwnerClientId;
+            public bool OwnerDisconnected;
         }
 
         private Transaction _active;
 
         public bool Active => _active != null;
+
+        /// <summary>The connection that opened the active transaction, if any.</summary>
+        public long ActiveOwner => _active != null ? _active.OwnerClientId : -1;
+
+        public bool ActiveOwnerDisconnected => _active != null && _active.OwnerDisconnected;
+
+        public string ActiveId => _active != null ? _active.Id : null;
+
+        /// <summary>Describe the active transaction so clients can see who holds it.</summary>
+        public JObject ActiveState()
+        {
+            if (_active == null) return null;
+            return new JObject
+            {
+                ["transaction"] = _active.Id,
+                ["label"] = _active.Label,
+                ["owner_client"] = _active.OwnerClientId,
+                ["owner_disconnected"] = _active.OwnerDisconnected,
+                ["begin_fingerprint"] = _active.BeginFingerprint,
+                ["contaminated"] = _active.ExternalChangeFingerprint != null
+            };
+        }
+
+        /// <summary>
+        /// Note that a connection has gone away.
+        /// </summary>
+        /// <remarks>
+        /// A client that disconnects mid-transaction leaves the scene part-way
+        /// through an edit. Rolling back automatically could destroy work the
+        /// caller meant to keep, and committing automatically could publish a
+        /// half-finished edit, so the transaction is marked orphaned instead:
+        /// any client may then finish it deliberately with commit or rollback,
+        /// and system.hello reports that it is waiting.
+        /// </remarks>
+        public void ClientDisconnected(long clientId)
+        {
+            if (_active != null && _active.OwnerClientId == clientId) _active.OwnerDisconnected = true;
+        }
+
         public RoboVisionTransactions(RoboVisionHost _host) { }
 
         public void MarkExternalChange(string fingerprint)
@@ -80,7 +121,7 @@ namespace Kodaxa.RoboVision.Editor
             };
         }
 
-        public JToken Begin(JObject parameters)
+        public JToken Begin(JObject parameters, long ownerClientId)
         {
             if (_active != null)
                 throw new RoboVisionException("TRANSACTION_ACTIVE", "a transaction is already active",
@@ -92,13 +133,21 @@ namespace Kodaxa.RoboVision.Editor
             Undo.IncrementCurrentGroup();
             var group = Undo.GetCurrentGroup();
             Undo.SetCurrentGroupName("RoboVision " + label);
-            _active = new Transaction { Id = id, Label = label, UndoGroup = group, BeginFingerprint = fingerprint };
+            _active = new Transaction
+            {
+                Id = id,
+                Label = label,
+                UndoGroup = group,
+                BeginFingerprint = fingerprint,
+                OwnerClientId = ownerClientId
+            };
             return new JObject
             {
                 ["transaction"] = id,
                 ["label"] = label,
                 ["begin_fingerprint"] = fingerprint,
                 ["undo_group"] = group,
+                ["owner_client"] = ownerClientId,
                 ["contaminated"] = false
             };
         }

@@ -25,7 +25,7 @@ namespace Kodaxa.RoboVision.Editor
             host.AddTool("object.create", p => CreateObject(p), mutating: true, stability: "alpha");
             host.AddTool("object.delete", p => DeleteObject(p), mutating: true, stability: "alpha");
             host.AddTool("object.transform", p => TransformObject(p), mutating: true, stability: "alpha");
-            host.AddTool("transaction.begin", p => host.Transactions.Begin(p), stability: "alpha", transactionControl: true);
+            host.AddTool("transaction.begin", p => host.Transactions.Begin(p, host.CurrentClientId), stability: "alpha", transactionControl: true);
             host.AddTool("transaction.commit", p => host.Transactions.Commit(p), stability: "alpha", transactionControl: true);
             host.AddTool("transaction.rollback", p => host.Transactions.Rollback(p), mutating: true, stability: "alpha", transactionControl: true);
         }

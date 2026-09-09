@@ -28,6 +28,7 @@ LOG="${LOG:-$REPO/artifacts/unity-gate4/editor.log}"
 UNITY_EXE="${UNITY_EXE:-}"
 KEEP=0
 GUI=0
+FILTER="${FILTER:-}"
 
 fail() { echo "::error::$*" >&2; exit 2; }
 
@@ -39,6 +40,7 @@ while [ $# -gt 0 ]; do
     --log)     LOG="$2"; shift 2 ;;
     --keep)    KEEP=1; shift ;;
     --gui)     GUI=1; shift ;;
+    --filter)  FILTER="$2"; shift 2 ;;
     *) fail "unknown argument: $1" ;;
   esac
 done
@@ -116,12 +118,25 @@ set +e
   -projectPath "$(native "$PROJECT")" \
   -runTests \
   -testPlatform EditMode \
+  ${FILTER:+-testFilter "$FILTER"} \
   -testResults "$(native "$RESULTS")" \
   -logFile "$(native "$LOG")"
 STATUS=$?
 set -e
 
 echo "  unity exit: $STATUS"
+
+# A test assembly that fails to compile leaves Unity running the previously
+# built one, so the suite reports on stale code and every result is suspect.
+# That has to be a hard failure, not a footnote.
+if [ -f "$LOG" ] && grep -qE "error CS[0-9]+" "$LOG"; then
+  echo "  COMPILE ERRORS - results below (if any) came from a stale assembly:"
+  grep -E "error CS[0-9]+" "$LOG" | sort -u | head -n 20 | sed 's/^/    /'
+  rv_compile_failed=1
+else
+  rv_compile_failed=0
+fi
+
 if [ -s "$RESULTS" ]; then
   python - "$RESULTS" <<'PY'
 import sys, xml.etree.ElementTree as ET
@@ -152,4 +167,8 @@ else
 fi
 
 [ "$KEEP" = "1" ] || rm -rf "$PROJECT/Library/ShaderCache" 2>/dev/null || true
+if [ "${rv_compile_failed:-0}" = "1" ]; then
+  echo "::error::the Unity assemblies did not compile; test results are not trustworthy"
+  exit 3
+fi
 exit "$STATUS"

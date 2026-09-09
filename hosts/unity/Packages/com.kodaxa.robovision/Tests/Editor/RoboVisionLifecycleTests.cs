@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.IO;
 using NUnit.Framework;
@@ -151,6 +152,12 @@ namespace Kodaxa.RoboVision.Editor.Tests
             });
             Assert.That(reply.Value<bool>("ok"), Is.True, "the host did not answer after a domain reload");
 
+            // A socket round-trip in this same coroutine was tried and removed.
+            // Resuming an iterator across a domain reload and then doing socket
+            // work inside it fails in the test framework's own resumption, not
+            // in the host. The stronger claim — the shipped Python client
+            // connecting to a brand new editor process — is proven by
+            // tools/unity-restart-gate.sh instead.
             RoboVisionHost.Instance.Stop();
         }
     }
