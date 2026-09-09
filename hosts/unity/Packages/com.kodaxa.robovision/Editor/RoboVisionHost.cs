@@ -33,6 +33,8 @@ namespace Kodaxa.RoboVision.Editor
             public bool Mutating;
             public bool Evidence;
             public bool RequiresUi;
+            /// <summary>What this call's answer is worth: see RoboVisionHost.Reads*.</summary>
+            public string Reads;
             public string Stability;
             public bool TransactionControl;
             public string Summary;
@@ -47,6 +49,7 @@ namespace Kodaxa.RoboVision.Editor
                     ["mutating"] = Mutating,
                     ["evidence"] = Evidence,
                     ["requires_ui"] = RequiresUi,
+                    ["reads"] = Reads,
                     ["stability"] = Stability,
                     ["summary"] = Summary ?? String.Empty,
                     ["tags"] = new JArray(Tags ?? Array.Empty<string>())
@@ -71,20 +74,32 @@ namespace Kodaxa.RoboVision.Editor
         public const int DefaultPort = 9878;
         public static RoboVisionHost Instance { get; } = new RoboVisionHost();
 
+        /// <summary>What a call guarantees about the scene state behind its answer.</summary>
+        /// <remarks>
+        /// A separate axis from Evidence, which says whether a call produces a
+        /// durable artifact. scene.describe produces no artifact and still must
+        /// not answer from a stale baseline, so the two cannot be one flag.
+        /// Authoritative is the default: a tool that presents scene state and
+        /// forgets to classify itself is correct and slow, never fast and wrong.
+        /// </remarks>
+        public const string ReadsAuthoritative = "authoritative";
+        public const string ReadsNotified = "notified";
+        public const string ReadsIndependent = "independent";
+
         private readonly Dictionary<string, ToolSpec> _tools = new Dictionary<string, ToolSpec>(StringComparer.Ordinal);
         private RoboVisionServer _server;
-        private bool _dirty = true;
-        private string _fingerprint;
-        private long _revision;
+        private readonly RoboVisionReconciler _reconciler;
 
         internal readonly RoboVisionTransactions Transactions;
         public bool Running => _server != null && _server.Running;
-        public long Revision => _revision;
+        public long Revision => _reconciler.Revision;
+        internal SceneRead CurrentRead => _reconciler.Current ?? _reconciler.Resync();
         public int Port => _server?.Port ?? DefaultPort;
 
         private RoboVisionHost()
         {
             Transactions = new RoboVisionTransactions(this);
+            _reconciler = new RoboVisionReconciler(Transactions);
             RegisterSystemTools();
             RoboVisionSceneTools.Register(this);
             RoboVisionSerializedTools.Register(this);
@@ -97,6 +112,7 @@ namespace Kodaxa.RoboVision.Editor
             bool mutating = false,
             bool evidence = false,
             bool requiresUi = false,
+            string reads = ReadsAuthoritative,
             string stability = "alpha",
             bool transactionControl = false,
             string summary = null,
@@ -104,6 +120,10 @@ namespace Kodaxa.RoboVision.Editor
             JObject paramsSchema = null)
         {
             if (_tools.ContainsKey(name)) throw new InvalidOperationException("Duplicate RoboVision tool: " + name);
+            if (reads != ReadsAuthoritative && reads != ReadsNotified && reads != ReadsIndependent)
+                throw new InvalidOperationException(name + ": unknown read consistency: " + reads);
+            if (mutating && reads != ReadsAuthoritative)
+                throw new InvalidOperationException(name + ": a mutating tool re-reads before it runs");
             var documented = RoboVisionToolDocs.Get(name);
             _tools[name] = new ToolSpec
             {
@@ -112,6 +132,7 @@ namespace Kodaxa.RoboVision.Editor
                 Mutating = mutating,
                 Evidence = evidence,
                 RequiresUi = requiresUi,
+                Reads = reads,
                 Stability = stability,
                 TransactionControl = transactionControl,
                 Summary = summary ?? documented?.Summary ?? String.Empty,
@@ -125,8 +146,8 @@ namespace Kodaxa.RoboVision.Editor
             if (Running) return;
             _server = new RoboVisionServer(port, Dispatch, Transactions.ClientDisconnected);
             _server.Start();
-            _dirty = true;
-            RefreshDirtyState();
+            _reconciler.MarkDirty();
+            _reconciler.RefreshDirtyState();
             EditorApplication.update -= Update;
             EditorApplication.update += Update;
             EditorApplication.hierarchyChanged -= MarkDirty;
@@ -182,58 +203,19 @@ namespace Kodaxa.RoboVision.Editor
 
         internal long CurrentClientId { get; private set; } = LocalClientId;
 
-        public void MarkDirty() => _dirty = true;
-
-        private void RefreshDirtyState()
-        {
-            if (!_dirty) return;
-            var current = RoboVisionSceneTools.ComputeFingerprint();
-            if (_fingerprint != null && !String.Equals(_fingerprint, current, StringComparison.Ordinal))
-            {
-                if (Transactions.Active) Transactions.MarkExternalChange(current);
-                _revision++;
-            }
-            _fingerprint = current;
-            _dirty = false;
-        }
-
-        /// <summary>
-        /// Re-read the scene before a mutation is allowed to run.
-        /// </summary>
+        /// <summary>A notification arrived. It says something may have changed, not what.</summary>
         /// <remarks>
-        /// hierarchyChanged and postprocessModifications are notifications, not
-        /// guarantees. The transport also dispatches up to eight requests per
-        /// editor update, so a burst runs with no tick in between and the dirty
-        /// flag can still be clear while the scene has moved. Trusting it would
-        /// let a stale if_revision pass the concurrency check and let an
-        /// out-of-band edit go unnoticed inside a transaction.
+        /// Every editor notification funnels here and no further. ObjectChangeEvents
+        /// publishes undoable changes to loaded objects once per frame, so it is not
+        /// comprehensive, and broad events such as ChangeScene may carry no object
+        /// information at all. Deciding what changed is reconciliation's job.
         /// </remarks>
-        private string Resync()
-        {
-            var current = RoboVisionSceneTools.ComputeFingerprint();
-            if (_fingerprint != null && !String.Equals(_fingerprint, current, StringComparison.Ordinal))
-            {
-                if (Transactions.Active) Transactions.MarkExternalChange(current);
-                _revision++;
-            }
-            _fingerprint = current;
-            _dirty = false;
-            return current;
-        }
+        public void MarkDirty() => _reconciler.MarkDirty();
 
-        internal void AcceptOwnMutation()
-        {
-            var current = RoboVisionSceneTools.ComputeFingerprint();
-            if (_fingerprint != null && !String.Equals(_fingerprint, current, StringComparison.Ordinal)) _revision++;
-            _fingerprint = current;
-            _dirty = false;
-        }
+        internal bool DirtyForTests => _reconciler.Dirty;
 
-        private void AcceptRecoveredState(string fingerprint)
-        {
-            _fingerprint = fingerprint;
-            _dirty = false;
-        }
+        /// <summary>Force one authoritative reconciliation. Exposed for lifecycle callers.</summary>
+        internal SceneRead Resync() => _reconciler.Resync();
 
         // internal so the package's EditMode tests can drive the host through the
         // same entry point the transport uses, rather than a test-only shim.
@@ -245,9 +227,9 @@ namespace Kodaxa.RoboVision.Editor
             var watch = Stopwatch.StartNew();
             var requestId = raw.Value<string>("id");
             RoboVisionTransactions.OperationCheckpoint checkpoint = null;
+            SceneRead checkpointRead = null;
             try
             {
-                RefreshDirtyState();
                 if (raw.Value<string>("rv") != ProtocolVersion)
                     throw new RoboVisionException("PROTOCOL_MISMATCH", "expected protocol " + ProtocolVersion);
                 // Checked before defaulting: coalescing first made this unreachable,
@@ -281,48 +263,64 @@ namespace Kodaxa.RoboVision.Editor
                         });
                 }
 
-                string checkpointFingerprint = null;
-                if (spec.Mutating || spec.TransactionControl)
-                    checkpointFingerprint = Resync();
+                // Read consistency is a property of the tool, decided once here
+                // rather than arranged by each handler. A call that presents scene
+                // state re-reads first, or it can return current state stamped with
+                // the revision of the state before it.
+                if (spec.Mutating || spec.TransactionControl || spec.Reads == ReadsAuthoritative)
+                    checkpointRead = _reconciler.Resync();
+                else if (spec.Reads == ReadsNotified)
+                    _reconciler.RefreshDirtyState();
 
                 var revisionToken = raw["if_revision"];
                 if (spec.Mutating && revisionToken != null && revisionToken.Type != JTokenType.Null)
                 {
                     var expected = revisionToken.Value<long>();
-                    if (expected != _revision)
+                    if (expected != Revision)
                         throw new RoboVisionException(
                             "STALE_REVISION",
                             "scene revision changed",
                             true,
-                            new JObject { ["expected"] = expected, ["actual"] = _revision });
+                            new JObject { ["expected"] = expected, ["actual"] = Revision });
                 }
 
                 if (spec.Mutating && !spec.TransactionControl)
-                    checkpoint = Transactions.PrepareMutation(method, checkpointFingerprint);
+                    checkpoint = Transactions.PrepareMutation(method, checkpointRead.Fingerprint);
 
                 var result = spec.Handler(parameters);
+
+                string outcome = null;
                 if (spec.Mutating && (!spec.TransactionControl || method == "transaction.rollback"))
-                    AcceptOwnMutation();
+                {
+                    // applied and noop are both success; they differ in whether the
+                    // scene moved. A command that ran cleanly and left the state
+                    // exactly as it found it does not advance the revision.
+                    var accepted = _reconciler.AcceptOwnMutation(checkpointRead, requestId);
+                    outcome = accepted.Moved ? "applied" : "noop";
+                }
 
                 watch.Stop();
-                return new JObject
+                var response = new JObject
                 {
                     ["rv"] = ProtocolVersion,
                     ["id"] = requestId ?? "invalid",
                     ["ok"] = true,
-                    ["revision"] = _revision,
+                    ["revision"] = Revision,
+                    ["consistency"] = spec.Reads,
                     ["result"] = result,
                     ["timing_ms"] = Math.Round(watch.Elapsed.TotalMilliseconds, 3)
                 };
+                if (outcome != null) response["outcome"] = outcome;
+                return response;
             }
             catch (RoboVisionException ex)
             {
-                var recoveryFailure = TryRecoverFailedOperation(checkpoint, ex, out var recovery);
+                var recoveryFailure = TryRecoverFailedOperation(checkpoint, checkpointRead, requestId, ex, out var recovery);
                 return ErrorResponse(requestId, watch, recoveryFailure ?? ex, recovery);
             }
             catch (Exception ex)
             {
-                var recoveryFailure = TryRecoverFailedOperation(checkpoint, ex, out var recovery);
+                var recoveryFailure = TryRecoverFailedOperation(checkpoint, checkpointRead, requestId, ex, out var recovery);
                 if (recoveryFailure != null)
                     return ErrorResponse(requestId, watch, recoveryFailure, recovery);
                 UnityEngine.Debug.LogException(ex);
@@ -339,7 +337,7 @@ namespace Kodaxa.RoboVision.Editor
                     ["rv"] = ProtocolVersion,
                     ["id"] = requestId ?? "invalid",
                     ["ok"] = false,
-                    ["revision"] = _revision,
+                    ["revision"] = Revision,
                     ["error"] = error,
                     ["timing_ms"] = Math.Round(watch.Elapsed.TotalMilliseconds, 3)
                 };
@@ -348,6 +346,8 @@ namespace Kodaxa.RoboVision.Editor
 
         private RoboVisionException TryRecoverFailedOperation(
             RoboVisionTransactions.OperationCheckpoint checkpoint,
+            SceneRead checkpointRead,
+            string requestId,
             Exception original,
             out JObject recovery)
         {
@@ -356,7 +356,7 @@ namespace Kodaxa.RoboVision.Editor
             try
             {
                 recovery = Transactions.RecoverFailedMutation(checkpoint);
-                AcceptRecoveredState(checkpoint.Fingerprint);
+                _reconciler.AcceptRecovered(checkpointRead);
                 return null;
             }
             catch (RoboVisionException recoveryError)
@@ -373,7 +373,11 @@ namespace Kodaxa.RoboVision.Editor
                     if (rvOriginal.Data != null) originalData["data"] = rvOriginal.Data.DeepClone();
                 }
                 data["original_error"] = originalData;
-                _dirty = true;
+                // The mutation left something behind that could not be undone. That
+                // residue is ours, so it is reconciled and attributed to the request
+                // that caused it, rather than left for the next refresh to blame on
+                // a human edit.
+                _reconciler.Reconcile(RoboVisionReconciler.Agent, requestId, checkpointRead);
                 return new RoboVisionException(recoveryError.Code, recoveryError.Message, recoveryError.Retryable, data);
             }
         }
@@ -404,7 +408,7 @@ namespace Kodaxa.RoboVision.Editor
                 ["rv"] = ProtocolVersion,
                 ["id"] = requestId ?? "invalid",
                 ["ok"] = false,
-                ["revision"] = _revision,
+                ["revision"] = Revision,
                 ["error"] = error,
                 ["timing_ms"] = Math.Round(watch.Elapsed.TotalMilliseconds, 3)
             };
@@ -476,15 +480,18 @@ namespace Kodaxa.RoboVision.Editor
         {
             AddTool(
                 "system.ping",
-                _ => new JObject { ["pong"] = true, ["host"] = "unity", ["revision"] = _revision },
+                _ => new JObject { ["pong"] = true, ["host"] = "unity", ["revision"] = Revision },
+                reads: ReadsNotified,
                 stability: "beta");
             AddTool(
                 "system.capabilities",
                 CapabilityCatalog,
+                reads: ReadsIndependent,
                 stability: "beta");
             AddTool(
                 "system.method",
                 DescribeMethod,
+                reads: ReadsIndependent,
                 stability: "beta");
             AddTool(
                 "system.hello",
@@ -506,7 +513,7 @@ namespace Kodaxa.RoboVision.Editor
                             ["version"] = Application.unityVersion,
                             ["playing"] = EditorApplication.isPlaying
                         },
-                        ["revision"] = _revision,
+                        ["revision"] = Revision,
                         ["capability_count"] = capabilities.Count,
                         ["capabilities"] = capabilities,
                         ["discovery"] = new JObject
@@ -546,6 +553,7 @@ namespace Kodaxa.RoboVision.Editor
                         }
                     };
                 },
+                reads: ReadsNotified,
                 stability: "beta");
         }
 

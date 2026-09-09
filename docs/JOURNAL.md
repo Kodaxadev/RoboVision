@@ -99,6 +99,9 @@ Journal polling is deliberately in the cheap class. Reconciling there would make
 every poll a deep read and would make polling itself the thing that discovers
 changes, confusing *reporting* a position with *establishing* one.
 
+Both hosts implement this. Unity's classes and defaults are the same, including
+the rule that a mutating tool cannot declare anything but `authoritative`.
+
 ## One reconciliation path
 
 Everything that moves the host's baseline — the dirty refresh, the pre-mutation
@@ -117,6 +120,23 @@ certainty. Missed notifications are not hypothetical — Blender fires
 writes a datablock and does not update leaves the host clean over a stale
 baseline. An authoritative `scene.snapshot` reconciles before it answers, so it
 is a genuine baseline even when the host believed nothing had happened.
+
+### The same path in Unity
+
+Unity had the same three near-identical bodies — `RefreshDirtyState`, `Resync`,
+`AcceptOwnMutation` — and they are now one `RoboVisionReconciler` with the same
+steps in the same order: capture an authoritative read, compare the baseline
+fingerprint, advance the revision only if state moved, derive `applied` or
+`noop`, diff old to new, attribute, replace the baseline.
+
+The temptation to do otherwise is stronger in Unity, not weaker.
+`ObjectChangeEvents.changesPublished` looks like a real change feed, but it
+publishes undoable changes to *loaded* objects once per frame, so it is not
+comprehensive, and its broad events — `ChangeScene` among them — may carry no
+object information at all. Every editor notification therefore funnels into
+`MarkDirty` and no further: notifications say something *may* have changed, and
+reconciliation decides what did. `ObjectChangeEventStream` is sensor input to
+this state machine, never the durable journal.
 
 ## A command that ran is not a scene that changed
 

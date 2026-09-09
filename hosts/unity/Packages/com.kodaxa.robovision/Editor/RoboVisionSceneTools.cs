@@ -53,8 +53,54 @@ namespace Kodaxa.RoboVision.Editor
 
         internal static string ComputeFingerprint()
         {
+            return CaptureRead().Fingerprint;
+        }
+
+        /// <summary>One authoritative read: the scene state and its fingerprint.</summary>
+        /// <remarks>
+        /// Taken together deliberately. Capturing the state and hashing it in
+        /// two separate passes would let the scene move between them, and the
+        /// pair would then describe two different moments.
+        /// </remarks>
+        internal static SceneRead CaptureRead()
+        {
             var state = CaptureState();
-            return HashToken(HashableState(state));
+            return new SceneRead { State = state, Fingerprint = HashToken(HashableState(state)) };
+        }
+
+        /// <summary>Object-level created, deleted and changed between two reads.</summary>
+        /// <remarks>
+        /// The one diff implementation. `scene.diff` answers a client with it and
+        /// reconciliation attributes changes with it, so the two can never come
+        /// to different conclusions about what moved.
+        /// </remarks>
+        internal static JObject DiffReads(SceneRead before, SceneRead after)
+        {
+            var beforeObjects = FlattenObjects(before.State);
+            var afterObjects = FlattenObjects(after.State);
+            var created = afterObjects.Keys.Except(beforeObjects.Keys).OrderBy(x => x, StringComparer.Ordinal)
+                .Select(x => new JObject { ["id"] = x, ["name"] = afterObjects[x].Value<string>("name") });
+            var deleted = beforeObjects.Keys.Except(afterObjects.Keys).OrderBy(x => x, StringComparer.Ordinal)
+                .Select(x => new JObject { ["id"] = x, ["name"] = beforeObjects[x].Value<string>("name") });
+            var changed = beforeObjects.Keys.Intersect(afterObjects.Keys)
+                .Where(x => !JToken.DeepEquals(beforeObjects[x], afterObjects[x]))
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .Select(x => new JObject { ["id"] = x, ["before"] = beforeObjects[x], ["after"] = afterObjects[x] });
+            return new JObject
+            {
+                ["created"] = new JArray(created),
+                ["deleted"] = new JArray(deleted),
+                ["changed"] = new JArray(changed)
+            };
+        }
+
+        private static SceneRead ReadOf(JObject stored)
+        {
+            return new SceneRead
+            {
+                State = (JObject)stored["state"],
+                Fingerprint = stored.Value<string>("fingerprint")
+            };
         }
 
         private static JObject Describe(RoboVisionHost host, JObject parameters)
@@ -62,14 +108,20 @@ namespace Kodaxa.RoboVision.Editor
             return new JObject
             {
                 ["revision"] = host.Revision,
-                ["scenes"] = CaptureState()["scenes"]
+                ["scenes"] = host.CurrentRead.State["scenes"]
             };
         }
 
         private static JObject Snapshot(RoboVisionHost host, JObject parameters)
         {
-            var state = CaptureState();
-            var fingerprint = HashToken(HashableState(state));
+            // Reuse the dispatcher's authoritative read rather than taking a
+            // second one, which could differ from the revision being reported.
+            var read = host.CurrentRead;
+            // Cloned, not aliased: a stored snapshot is evidence, and evidence
+            // that shares a mutable object with the host's live baseline could
+            // change under the client holding it.
+            var state = (JObject)read.State.DeepClone();
+            var fingerprint = read.Fingerprint;
             var id = "snap:" + Guid.NewGuid();
             var snapshot = new JObject { ["fingerprint"] = fingerprint, ["state"] = state };
             Snapshots[id] = snapshot;
@@ -83,23 +135,16 @@ namespace Kodaxa.RoboVision.Editor
             var id = parameters.Value<string>("from_snapshot");
             if (String.IsNullOrWhiteSpace(id)) throw new RoboVisionException("INVALID_PARAMS", "from_snapshot is required");
             if (!Snapshots.TryGetValue(id, out var before)) throw new RoboVisionException("NOT_FOUND", "snapshot not found: " + id);
-            var afterState = CaptureState();
-            var beforeObjects = FlattenObjects((JObject)before["state"]);
-            var afterObjects = FlattenObjects(afterState);
-            var created = afterObjects.Keys.Except(beforeObjects.Keys).OrderBy(x => x).Select(x => new JObject { ["id"] = x, ["name"] = afterObjects[x].Value<string>("name") });
-            var deleted = beforeObjects.Keys.Except(afterObjects.Keys).OrderBy(x => x).Select(x => new JObject { ["id"] = x, ["name"] = beforeObjects[x].Value<string>("name") });
-            var changed = beforeObjects.Keys.Intersect(afterObjects.Keys).Where(x => !JToken.DeepEquals(beforeObjects[x], afterObjects[x])).OrderBy(x => x)
-                .Select(x => new JObject { ["id"] = x, ["before"] = beforeObjects[x], ["after"] = afterObjects[x] });
-            var afterFingerprint = HashToken(HashableState(afterState));
-            return new JObject
-            {
-                ["from_snapshot"] = id,
-                ["before_fingerprint"] = before.Value<string>("fingerprint"),
-                ["after_fingerprint"] = afterFingerprint,
-                ["equal"] = before.Value<string>("fingerprint") == afterFingerprint,
-                ["created"] = new JArray(created), ["deleted"] = new JArray(deleted), ["changed"] = new JArray(changed),
-                ["revision"] = host.Revision
-            };
+            // The dispatcher reconciled authoritatively before this handler ran,
+            // so the host's baseline is the scene as it is now.
+            var after = host.CurrentRead;
+            var diff = DiffReads(ReadOf(before), after);
+            diff["from_snapshot"] = id;
+            diff["before_fingerprint"] = before.Value<string>("fingerprint");
+            diff["after_fingerprint"] = after.Fingerprint;
+            diff["equal"] = before.Value<string>("fingerprint") == after.Fingerprint;
+            diff["revision"] = host.Revision;
+            return diff;
         }
 
         private static JObject InspectObject(JObject parameters)

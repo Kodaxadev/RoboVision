@@ -182,6 +182,25 @@ cycle, each holding its whole module alive. Callbacks now carry the token of the
 load that registered them, so a load whose `unregister` never ran is swept — and
 the gate asserts the sweep leaves another add-on's handlers untouched.
 
+### Unity reconciliation
+
+`Tests/Editor/RoboVisionReconciliationTests.cs` covers the Unity port of the one
+reconciliation path and the read-consistency policy, in the EditMode suite.
+
+These tests run with the host's editor subscriptions not installed, which is the
+missed-notification case permanently rather than a shortcut: a change made
+directly to the scene is never announced, so an answer is current only if the
+call that produced it re-read. The suite asserts that an authoritative read finds
+such a change and advances the revision, that a cheap read deliberately does not,
+that the pre-mutation resync still catches one and refuses a stale `if_revision`,
+that a mutation which changes nothing reports `outcome: noop` and leaves the
+revision alone, that a rejected mutation does the same, and that the set of
+non-authoritative tools is exactly the reviewed list.
+
+The journal itself is not ported yet, and that ordering is deliberate: a common
+journal abstraction with a missed-notification hole would be duplicated behind
+Unity's more convincing notification API rather than fixed.
+
 ### Not yet proven at Gate 1
 
 - undo-driven recovery outside Object Mode; the host reports `RECOVERY_UNSAFE`
