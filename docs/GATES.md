@@ -76,6 +76,8 @@ before the run is unchanged after it.
 | health, cross-editor public flow | Blender 5.1.2, Windows, headless | pass |
 | asset truth: geometry, coordinate/scale, comparison | Blender 5.1.2, Windows, headless | pass |
 | asset truth: view coverage, reference shape, pattern | Blender 5.1.2, Windows, headless | pass |
+| asset truth: edit locality | Blender 5.1.2, Windows, headless | pass |
+| asset truth: correction evaluator, accept + 4 reject/rollback branches | Blender 5.1.2, Windows, **interactive** | pass |
 
 The Gate 1 baseline fingerprint is identical on both platforms and versions.
 
@@ -312,6 +314,54 @@ review, and all three are recorded in ASSET_TRUTH.md: reference framing that
 absorbed proportion error, a radial gap set that ignored the wrap-around, and
 member extent read from a world-aligned box so that rotation registered as
 resizing.
+
+### Locality and the correction evaluator
+
+`tests/blender/truth_locality.py` (headless) declares a blast radius and then
+breaks it one way at a time: the target alone changes and passes; a protected
+object is moved, and separately deleted, and both are protected changes; a helper
+object is created and left behind; a dependency is touched, failing when
+undeclared and passing when declared — with the same measured change count both
+times, so the declaration changed how the edit was judged rather than what was
+measured. A declaration naming an object as both target and protected is refused,
+as is one with no targets at all.
+
+`tests/blender/truth_correction.py` runs in an **interactive Blender** —
+`xvfb-run` in CI — and asserts that it is not in background before it starts.
+This is the one gate that cannot be faked headlessly: `ed.undo` there reports
+FINISHED and restores nothing, so a rejected branch would leave the bad candidate
+in the scene and the gate would pass anyway.
+
+Six branches, each a full Q0 → transaction → candidate → Q1 → evaluate →
+commit-or-rollback cycle against a box that is 60% too wide in its front view:
+
+| candidate | decision | cause |
+| --- | --- | --- |
+| scale back to the reference | accept | committed, front excess 0.577 → 0.0 |
+| scale part-way (0.115 improvement, 0.4 demanded) | reject | insufficient_target_improvement |
+| fix the width and extrude a face in place | reject | failed_invariant: no_degenerate_faces |
+| fix the width and deepen the side by 40% | reject | protected_regression on the *side* certificate |
+| fix the width and nudge a protected neighbour | reject | locality_violation: protected_unchanged |
+| require an invariant nothing measured | indeterminate | invariant_missing |
+
+Every rejected and indeterminate branch rolled back and reproduced the begin
+fingerprint exactly. Two of them are the cases a weaker design would wave
+through: the third improves its declared objective and wrecks the mesh
+invisibly — the extruded face is zero-area and changes no silhouette — and the
+fourth improves the front view while regressing a metric of the *same name* on a
+view the front camera cannot see.
+
+One fixture was strengthened after inspecting its own output: a 1.6→1.58 nudge is
+sub-pixel at the mask resolution and improved the metric by exactly nothing, so
+it proved only that an unmeasurable change is rejected. The demanded improvement
+was raised instead of the step shrunk, so the rejected candidate is now a real,
+measured 0.115 improvement against a 0.4 requirement.
+
+One evaluator defect was found while writing this gate: metric lookup searched
+every certificate and returned the first match, so a policy naming
+`reference.macro.excess_fraction` with front and side certificates both present
+would silently judge whichever came first. Policies now name the certificate, and
+an unqualified ambiguous name is `indeterminate` rather than a guess.
 
 
 ### Readiness, and the pins an external agent has to discover

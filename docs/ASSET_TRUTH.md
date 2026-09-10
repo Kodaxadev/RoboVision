@@ -206,21 +206,84 @@ which made rotating and resizing — different corrections — one number.
 
 ## 6. Edit locality
 
-*Not yet implemented.* A declared target region and declared protected entities,
-a pre/post diff, and an out-of-scope change that is measurable and can reject a
-correction on its own.
+**Implemented** (`truth.locality`).
+
+A correction declares its blast radius *before* it runs: targets that may change,
+objects that are protected, and any dependency it is explicitly allowed to touch.
+Afterwards the current state is compared against a snapshot handle from
+`scene.snapshot` — the host's own deep snapshot and diff, not a second
+fingerprinting scheme, because a second source of truth about what changed would
+eventually disagree with the one rollbacks are verified against.
+
+Invariants: `protected_unchanged` (a protected object that was *deleted* counts,
+since the point of protecting it was that it survives), `no_undeclared_changes`,
+and `no_undeclared_objects` — the last catching the classic quiet failure where
+the correction worked and the file now contains a helper cube nobody meant to
+ship. A declaration naming an object as both target and protected is refused
+rather than resolved, and a declaration with no targets is refused because a
+correction with no declared blast radius cannot be checked for staying inside it.
+
+**Object-level, and it says so.** `locality.element_granularity` is declared
+unmeasured: post-operation topology indices are not stable enough across the
+operations that would need checking for a face-level claim to be honest. Mesh
+revisions are reported per changed subject, which is the strongest granularity
+the host can currently stand behind.
 
 ## 7. Correction evaluation contract
 
-*Not yet implemented as a driver*; the measurement half it needs exists.
-Capture Q0, execute the candidate inside a transaction, capture Q1, require every
-hard invariant to still hold, require the target metric to improve by epsilon,
-require protected metrics not to regress beyond tolerance — then commit, or roll
-back with proof.
+**Implemented** (`truth.evaluate`).
 
-`begin_correction` in `system.health` already refuses to call this capability
-available where a verified rollback cannot be performed, because the reject
-branch is half of the contract.
+The deterministic half of the Artist Loop. Deciding *what* to try stays the
+frontier model's job; deciding whether the attempt earned its commit is
+arithmetic, and arithmetic is what should be trusted with a commit.
+
+**No weighted scalar.** Acceptance is a vector of constraints that must all hold:
+every required invariant still passes, every declared target improves by at least
+its epsilon *in the direction its own metric declares*, no protected metric
+regresses beyond its tolerance, and locality passes. A single quality number
+would teach an agent that a large improvement in a cheap metric buys a small
+regression in an expensive one, and eventually buys a broken mesh.
+
+**Direction comes from the measurement,** never from a table here — a table would
+drift from the metrics it describes, and it would drift in the direction of
+accepting regressions. A `neutral` metric cannot be a target at all, because
+nothing could decide whether it moved the right way; it can still be protected,
+against movement in either direction.
+
+**Metric names are qualified by certificate.** A front-view and a side-view
+reference comparison both publish `reference.macro.excess_fraction`, and they are
+exactly the pair a policy treats differently — improve the front, protect the
+side. An unqualified name that matches two certificates is `indeterminate`, not
+whichever was iterated first. An invariant name appearing twice holds only if
+every copy holds.
+
+**Missing evidence is never acceptance.** A required invariant that could not be
+established, a metric absent from one side, an ambiguous name: `indeterminate`,
+with the missing piece named. A comparison across incompatible measurements is
+`reject`, because a correction whose result cannot be verified must not be kept
+and the safe outcome of "I cannot tell" is to roll back. Rejection outranks
+indeterminacy — a candidate that broke a gate is not merely unproven.
+
+`begin_correction` in `system.health` refuses to call this capability available
+where a verified rollback cannot be performed, because the reject branch is half
+of the contract.
+
+## Completion
+
+DAT v0 can now answer, deterministically:
+
+1. is this geometry structurally valid under its declared open/closed semantics?
+   — `truth.geometry`
+2. what physical size, frame and state does this measurement describe? —
+   `truth.spatial`
+3. which parts of the asset have actually been visually inspected? —
+   `truth.coverage`, with the next-best camera calculated
+4. how does its observed profile differ from a reference? — `truth.reference`
+5. does a declared repeated structure satisfy its pattern? — `truth.pattern`
+6. did a correction change only what it was allowed to change? — `truth.locality`
+7. did Q1 improve the requested metric enough without violating invariants or
+   protected qualities? — `truth.evaluate`
+8. therefore: keep, reject, or treat as indeterminate? — the same, with causes
 
 ## Recorded but not gated
 

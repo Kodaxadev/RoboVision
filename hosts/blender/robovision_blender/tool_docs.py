@@ -153,6 +153,40 @@ METHOD_DOCS: dict[str, dict[str, Any]] = {
             ("count",),
         ),
     ),
+    "truth.locality": _entry(
+        "Compare the current state against a stored snapshot under a declared blast "
+        "radius: which targets changed, whether anything protected or undeclared did.",
+        ("truth", "verify"),
+        _object(
+            {
+                "before": STRING,
+                "targets": _array(OBJECT_REF),
+                "protecteds": _array(OBJECT_REF),
+                "alloweds": _array(OBJECT_REF),
+            },
+            ("before", "targets"),
+        ),
+    ),
+    "truth.evaluate": _entry(
+        "Decide whether a candidate correction should be committed, rejected or treated "
+        "as indeterminate, from Q0 and Q1 certificates and a vector acceptance policy.",
+        ("truth", "verify"),
+        _object(
+            {
+                "before": {"type": "object"},
+                "after": {"type": "object"},
+                "targets": _array(_object(
+                    {"metric": STRING, "kind": STRING, "epsilon": NUMBER}, ("metric",))),
+                "protected": _array(_object(
+                    {"metric": STRING, "kind": STRING, "tolerance": NUMBER}, ("metric",))),
+                "required_invariants": {},
+                "advisory": _array(STRING),
+                "locality": {"type": "object"},
+                "require_locality": BOOLEAN,
+            },
+            ("before", "after", "targets"),
+        ),
+    ),
     "truth.compare": _entry(
         "Compare two measurement certificates; refuses when they do not describe the same "
         "subjects in the same world and coordinate contract.",

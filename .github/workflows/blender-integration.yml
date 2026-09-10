@@ -189,6 +189,17 @@ jobs:
             --python-exit-code 1 \
             --python tests/blender/truth_pattern.py
 
+      - name: Run RoboVision edit locality gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-truth-locality
+          "${BLENDER_DIR}/blender" \
+            --background \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/truth_locality.py
+
       - name: Run RoboVision health gate
         shell: bash
         run: |
@@ -267,6 +278,17 @@ jobs:
             --factory-startup \
             --python-exit-code 1 \
             --python tests/blender/gate1_soak.py
+
+      - name: Run RoboVision correction evaluation gate in interactive Blender
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-truth-correction
+          xvfb-run -a -s "-screen 0 1920x1080x24" \
+            "${BLENDER_DIR}/blender" \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/truth_correction.py
 
       - name: Run RoboVision Gate 2 perception in interactive Blender
         shell: bash

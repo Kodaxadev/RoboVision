@@ -45,6 +45,11 @@ NOT_AUTHORITATIVE = {
     # third moment while claiming to compare two, which is the one way this
     # operation could produce a confident wrong answer.
     "truth.compare": "independent",
+    # Arithmetic over certificates the caller already holds, for the same reason
+    # truth.compare is: a decision that consulted the scene while claiming to
+    # judge two recorded measurements would be judging a third moment, and this
+    # is the one whose output gets committed.
+    "truth.evaluate": "independent",
 }
 
 

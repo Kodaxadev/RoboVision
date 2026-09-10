@@ -14,7 +14,8 @@ from __future__ import annotations
 from typing import Any
 
 from ..registry import AUTHORITATIVE, INDEPENDENT, HostError
-from ..truth import coverage, geometry, pattern, reference, spatial, views
+from ..truth import (coverage, evaluate as evaluation, geometry, locality, pattern,
+                     reference, spatial, views)
 from ..truth.certificate import comparable
 
 KINDS = ("geometry", "spatial")
@@ -181,6 +182,40 @@ def pattern_truth(params, runtime):
     return pattern.measure(members, declaration, runtime, subjects).certificate()
 
 
+def locality_truth(params, runtime):
+    """Compare the current state against a stored snapshot, under a declaration.
+
+    The `before` is a snapshot handle from `scene.snapshot`, so the comparison is
+    against the host's own recorded state rather than against a second
+    fingerprint this family invented. A correction verified by one notion of
+    "changed" and rolled back by another would eventually disagree with itself.
+    """
+    handle = params.get("before")
+    if not isinstance(handle, str) or not handle:
+        raise HostError("INVALID_PARAMS",
+                        "before must be a snapshot handle from scene.snapshot")
+    before = runtime.get_snapshot(handle)
+    declaration = locality.resolve(params)
+    after = runtime.current_snapshot()
+    return locality.measure(before, after, declaration, runtime).certificate()
+
+
+def evaluate_correction(params, runtime):
+    """Decide whether a candidate earned its commit. Arithmetic, not taste."""
+    before = params.get("before")
+    after = params.get("after")
+    for side, value in (("before", before), ("after", after)):
+        if not isinstance(value, dict) or not value:
+            raise HostError("INVALID_PARAMS",
+                            f"{side} must be a map of measurement kind to certificate")
+        for kind, certificate in value.items():
+            if not isinstance(certificate, dict) or "metrics" not in certificate:
+                raise HostError("INVALID_PARAMS",
+                                f"{side}[{kind}] is not a measurement certificate")
+    del runtime
+    return evaluation.evaluate(before, after, evaluation.resolve_policy(params))
+
+
 def measure(params, runtime):
     """Every requested kind, taken from one authoritative read of one moment.
 
@@ -299,7 +334,13 @@ def register(registry) -> None:
     registry.add("truth.views", canonical_views_for, reads=AUTHORITATIVE, stability="alpha")
     registry.add("truth.reference", reference_truth, reads=AUTHORITATIVE, stability="alpha")
     registry.add("truth.pattern", pattern_truth, reads=AUTHORITATIVE, stability="alpha")
+    registry.add("truth.locality", locality_truth, reads=AUTHORITATIVE, stability="alpha")
     # Pure arithmetic over two certificates the caller already holds: it does not
     # look at the scene at all, and must not, or it would be measuring a third
     # moment while claiming to compare two.
     registry.add("truth.compare", compare, reads=INDEPENDENT, stability="alpha")
+    # The evaluator is arithmetic over certificates the caller already holds. It
+    # must not read the scene: a decision that consulted a third moment while
+    # claiming to judge two would be the one place a wrong answer gets committed.
+    registry.add("truth.evaluate", evaluate_correction, reads=INDEPENDENT,
+                 stability="alpha")
