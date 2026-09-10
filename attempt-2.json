@@ -1,0 +1,21 @@
+{
+  "objective": "Reposition counterweight x-axis to satisfy Y-only offset intent",
+  "reason": "I will test a focused counterweight correction and require a small improvement in side contour agreement to avoid overfitting. The front reference appears unchanged after bracket-only repair, so this is a conservative next probe.",
+  "targets": [
+    {"metric": "contour_mean_distance", "kind": "reference:side", "epsilon": 0.00001}
+  ],
+  "protected": [
+    {"metric": "max_spacing_error", "kind": "pattern:brackets", "tolerance": 1.0}
+  ],
+  "locality": {"targets": ["Counterweight"], "protected": [], "allowed": []},
+  "operations": [
+    {
+      "method": "object.transform",
+      "params": {
+        "object": "Counterweight",
+        "location": [0.0, -0.093989, -0.250639]
+      }
+    }
+  ],
+  "advisory": ["reference[side].contour_mean_distance", "pattern.spacing_max_error"]
+}

@@ -1,0 +1,19 @@
+{
+  "objective": "Correct bracket radial spacing by moving Bracket_1 to the ideal 72° position",
+  "reason": "Observed bracket angular spans are 76.901°, 67.099°, 72°, 72°, 72°, so Bracket_1 is the outlier (~+4.9007°) and is the likely cause of spacing failures.",
+  "targets": [
+    {"metric": "pattern.spacing_max_error", "kind": "pattern:brackets", "epsilon": 1.0}
+  ],
+  "protected": [],
+  "locality": {"targets": ["Bracket_1"], "protected": [], "allowed": []},
+  "operations": [
+    {
+      "method": "object.transform",
+      "params": {
+        "object": "Bracket_1",
+        "location": [0.06319, 0.194478, 0.051205]
+      }
+    }
+  ],
+  "advisory": ["pattern.spacing_max_error", "reference[side].contour_mean_distance", "reference[front].contour_mean_distance"]
+}
