@@ -56,7 +56,45 @@ fallback for a caller that did not precommit, and says which happened —
 indistinguishable.
 
 Adoption rotates the credential, so a leaked one cannot be replayed, and any
-host-minted replacement goes only to the client that just proved itself. Every refusal is
+host-minted replacement goes only to the client that just proved itself.
+
+### 4.2 The credential lifecycle belongs to the library
+
+An agent must not have to reason about CSPRNG secrets, because a caller that has
+to remember to generate and retain one will eventually not. `HostSession` owns
+that lifecycle: `begin_transaction` generates the secret, keeps it privately and
+sends only its verifier; `adopt_transaction` generates the *next* secret and
+retains it before the call that rotates to it, so a lost adoption reply costs
+nothing; `end_transaction` forgets the credential only once the transaction
+actually ended, because a commit refused for contamination is still a
+transaction that may need reclaiming. `recoverable_transaction` asks the host
+what became of the work rather than assuming, and reports whether this session
+still holds the credential — never the credential itself.
+
+The MCP surface is `rv_transaction_begin`, `rv_transaction_status`,
+`rv_transaction_adopt` and `rv_transaction_end`. The low-level `rv_call` remains
+for expert use, and a caller that drives `transaction.begin` through it is
+responsible for its own credential — which the response says, through
+`recovery_precommitted`.
+
+Secrets appear in no response, no diagnostic, no journal event, no operation
+ledger record and no capability description. The gate asserts that no structured
+output it collected contains one.
+
+### 4.3 One logical controller per host session
+
+The MCP adapter keeps one connection per host, which is correct for a single
+autonomous controller and is the assumption the Artist Loop is built on. It also
+means that several logical agents sharing one MCP server process share one
+connection identity, and therefore one transaction ownership.
+
+That is not solved here and does not need to be. What matters is that the
+boundary is real rather than accidental: **independently owned transactions
+require distinct host sessions**, because ownership is the connection and the
+host counts nothing else. A future planner or sub-agent architecture that needs
+agents to hold independent authority must give them separate sessions rather than
+sharing one and distinguishing them in request parameters — a client-supplied
+identity would be a claim, not a credential. Every refusal is
 side-effect free — owner, state, verifier, scene, revision and journal all
 unchanged — because an adoption attempt that changes something is a way to
 attack a transaction without passing its check.

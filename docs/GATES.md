@@ -204,13 +204,27 @@ tool call the transaction was already orphaned — the connection that opened it
 closed as that call returned — so the mutation and the rollback were both refused
 `TRANSACTION_ORPHANED`. Transactions were unusable for the Artist Loop.
 
-One session per host now, serialized, reconnected deliberately. The gate proves a
+One session per host now, serialized, reconnected deliberately. The gate drives
+the **public session helpers**, not a test that generates secrets itself, because
+what needs proving is the ergonomics an agent actually gets: it proves a
 transaction survives begin, three mutations and a read as separate MCP calls;
-that a dead socket orphans it and the reconnected session is treated as a
-stranger rather than the old owner until it adopts; that the precommitted
-recovery secret adopts it and rotates to the next precommitted one, with no
-secret in either reply; and that the strict autonomous contract is reachable from
-`rv_call`, with a retry replaying rather than creating a second object.
+that a dead socket orphans it while the credential outlives the socket it was
+meant to outlive; that the reconnected session is treated as a stranger rather
+than the old owner until it adopts; that the session's own credential adopts it
+and rotates to a replacement it already held; that a session which never opened a
+transaction holds nothing for it (`NO_RECOVERY_CREDENTIAL`); and that the strict
+autonomous contract is reachable from `rv_call`, with a retry replaying rather
+than creating a second object.
+
+An autonomous `transaction.begin` is observation-bound. The gate observes a
+revision, lets a human edit the scene, and asserts the planned begin is refused
+`STALE_REVISION` **before any transaction is opened** — a checkpoint taken from a
+scene that moved is a rollback target nobody chose. A begin missing its
+`expected_world`, `expected_coordinate_contract` or `if_revision` is
+`CONTRACT_VIOLATION`. Terminal records keep the proof that made them terminal, so
+a late commit of a finished transaction is told the state, the reason and the
+world rather than merely being refused. No structured output the gate collected
+contains a recovery credential.
 
 Not covered headless: rollback actually restoring the begin fingerprint through
 the MCP path. Background Blender cannot verify a rollback at all — its own gate

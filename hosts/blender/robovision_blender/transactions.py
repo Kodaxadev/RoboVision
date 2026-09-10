@@ -80,10 +80,16 @@ class TransactionManager:
         tx.state = ORPHANED
         tx.reason = "owner_disconnected"
 
-    def _finish(self, tx: Transaction, state: str, reason: str | None) -> None:
+    def _finish(self, tx: Transaction, state: str, reason: str | None,
+                evidence: dict[str, Any] | None = None) -> None:
         record: dict[str, Any] = {"transaction": tx.id, "state": state, "world_incarnation": tx.world}
         if reason is not None:
             record["reason"] = reason
+        # Terminal state instead of replaying a stored result is fine, but only
+        # if the terminal answer still carries what made it meaningful. A caller
+        # whose commit reply was lost needs the proof, not just the word.
+        if evidence:
+            record.update(evidence)
         self.finished[tx.id] = record
         while len(self.finished) > 32:
             self.finished.popitem(last=False)
@@ -251,7 +257,11 @@ class TransactionManager:
         undo.push(f"RoboVision COMMIT {tx.label}")
         after = scene_snapshot(level=DEEP)
         contaminated = tx.external_change_fingerprint is not None
-        self._finish(tx, COMMITTED, None)
+        self._finish(tx, COMMITTED, None, {
+            "begin_fingerprint": tx.begin_snapshot["fingerprint"],
+            "final_fingerprint": after["fingerprint"],
+            "forced_after_external_change": contaminated,
+        })
         return {
             "transaction": tx.id,
             "committed": True,
@@ -271,7 +281,10 @@ class TransactionManager:
 
         if current["fingerprint"] == target:
             # A no-op rollback is honest even where undo cannot restore.
-            self._finish(tx, ROLLED_BACK, None)
+            self._finish(tx, ROLLED_BACK, None, {
+                "restored_fingerprint": target, "undo_steps": 0,
+                "forced_after_external_change": contaminated,
+            })
             return {
                 "transaction": tx.id,
                 "rolled_back": True,
@@ -287,7 +300,10 @@ class TransactionManager:
             target, label=f"RoboVision ROLLBACK {tx.label}", max_steps=max_steps
         )
         if arrived:
-            self._finish(tx, ROLLED_BACK, None)
+            self._finish(tx, ROLLED_BACK, None, {
+                "restored_fingerprint": target, "undo_steps": steps,
+                "forced_after_external_change": contaminated,
+            })
             return {
                 "transaction": tx.id,
                 "rolled_back": True,

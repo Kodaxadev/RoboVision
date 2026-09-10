@@ -99,6 +99,12 @@ class ToolSpec:
     # be missed by asking only "does the revision advance?".
     side_effecting: bool = False
     duplicate_policy: str | None = None
+    # This operation's meaning depends on the state it was planned against, so
+    # under the autonomous contract it must name that state and is refused if it
+    # has moved. Separate from `mutating` and from `side_effecting` on purpose: a
+    # future external generation request is side-effecting and expensive to
+    # repeat without being bound to the current authored revision at all.
+    observation_bound: bool = False
 
     def describe(self, *, include_schema: bool = False) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -111,6 +117,7 @@ class ToolSpec:
             "seeds": list(self.seeds),
             "side_effecting": self.side_effecting,
             "duplicate_policy": self.duplicate_policy,
+            "observation_bound": self.observation_bound,
             "stability": self.stability,
             "summary": self.summary,
             "tags": list(self.tags),
@@ -145,6 +152,7 @@ class ToolRegistry:
         determinism: str = EXACT,
         side_effecting: bool | None = None,
         duplicate_policy: str | None = None,
+        observation_bound: bool = False,
     ) -> None:
         if name in self._tools:
             raise RuntimeError(f"duplicate RoboVision tool: {name}")
@@ -201,6 +209,7 @@ class ToolRegistry:
             determinism,
             resolved_side_effecting,
             resolved_policy,
+            bool(observation_bound),
         )
 
     def get(self, name: str) -> ToolSpec:

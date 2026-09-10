@@ -210,6 +210,89 @@ def build_server():
         except Exception as exc:
             return {"ok": False, "host": host, "method": method, "error": _error_payload(exc)}
 
+    @mcp.tool()
+    def rv_transaction_begin(
+        host: HostName,
+        label: str,
+        if_revision: int | None = None,
+        expected_world: str | None = None,
+        expected_coordinate_contract: str | None = None,
+        contract: str | None = None,
+    ) -> dict[str, Any]:
+        """Open a transaction. The recovery credential is handled for you.
+
+        Prefer this over `rv_call("transaction.begin")`. The session generates a
+        recovery secret, keeps it privately and sends only its hash, so a lost
+        reply or a dropped connection cannot strand the transaction — the
+        credential that reclaims it already exists on this side. Nothing you
+        receive contains it, and nothing you need to do involves it.
+
+        For planned work pass `contract="autonomous"` with `if_revision`,
+        `expected_world` and `expected_coordinate_contract` from the observation
+        that decided on this edit. The host then refuses to open a transaction
+        against a scene that moved underneath you, rather than checkpointing a
+        state nobody chose.
+        """
+        try:
+            return _session(host).begin_transaction(
+                label, if_revision=if_revision, expected_world=expected_world,
+                expected_coordinate_contract=expected_coordinate_contract,
+                contract=contract)
+        except Exception as exc:
+            return {"ok": False, "host": host, "method": "transaction.begin",
+                    "error": _error_payload(exc)}
+
+    @mcp.tool()
+    def rv_transaction_status(host: HostName) -> dict[str, Any]:
+        """Whether a transaction this session opened is waiting to be adopted.
+
+        Use after a `SESSION_LOST` error. The host is the only thing that knows
+        what became of the work, so this asks it rather than assuming, and says
+        whether this session still holds the credential to reclaim it.
+        """
+        try:
+            state = _session(host).recoverable_transaction()
+            return {"ok": True, "host": host, "transaction": state}
+        except Exception as exc:
+            return {"ok": False, "host": host, "error": _error_payload(exc)}
+
+    @mcp.tool()
+    def rv_transaction_adopt(host: HostName, transaction: str) -> dict[str, Any]:
+        """Reclaim a transaction this session opened after losing its connection.
+
+        The credential is supplied from the session's own store, and the
+        replacement is generated before the call, so losing this reply costs
+        nothing either. Only a session that actually opened the transaction can
+        do this.
+        """
+        try:
+            return _session(host).adopt_transaction(transaction)
+        except Exception as exc:
+            return {"ok": False, "host": host, "method": "transaction.adopt",
+                    "error": _error_payload(exc)}
+
+    @mcp.tool()
+    def rv_transaction_end(
+        host: HostName,
+        transaction: str,
+        outcome: Literal["commit", "rollback", "discard"],
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Finish a transaction: commit it, roll it back, or give it up.
+
+        `force` only overrides contamination — an out-of-band edit during the
+        transaction — and is the owner accepting that risk, not a way past any
+        other refusal. A rollback still proves restoration by reproducing the
+        begin fingerprint; it does not merely claim it.
+        """
+        method = {"commit": "transaction.commit", "rollback": "transaction.rollback",
+                  "discard": "transaction.discard"}[outcome]
+        params = {"force": True} if force else {}
+        try:
+            return _session(host).end_transaction(method, transaction, params=params)
+        except Exception as exc:
+            return {"ok": False, "host": host, "method": method, "error": _error_payload(exc)}
+
     @mcp.tool(structured_output=False)
     def rv_perception(
         host: HostName = "blender",

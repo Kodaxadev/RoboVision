@@ -167,18 +167,30 @@ def _assert_autonomous_contract(spec, raw: dict[str, Any], params: dict[str, Any
     it is technically not a retry, and nothing but an explicit expected world
     catches that.
     """
-    if raw.get("contract") != AUTONOMOUS or not spec.mutating:
+    if raw.get("contract") != AUTONOMOUS:
+        return
+    if not spec.mutating and not spec.observation_bound:
         return
     missing = []
+    # Both kinds of operation are pinned to the world and the unit convention
+    # they were planned in. A first delivery in the wrong world is exactly as
+    # wrong as a retry there, and a scene whose units were reinterpreted is a
+    # different scene however unchanged its revision looks.
     if not isinstance(raw.get("expected_world"), str) or not raw.get("expected_world"):
         missing.append("expected_world")
+    if not isinstance(raw.get("expected_coordinate_contract"), str) \
+            or not raw.get("expected_coordinate_contract"):
+        missing.append("expected_coordinate_contract")
     if if_revision is None:
         missing.append("if_revision")
-    if not isinstance(raw.get("idempotency_key"), str) or not raw.get("idempotency_key"):
-        missing.append("idempotency_key")
-    attempt = raw.get("attempt")
-    if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
-        missing.append("attempt")
+    if spec.mutating:
+        # Only a mutation can be applied twice, so only a mutation needs the
+        # identity that makes a redelivery recognisable.
+        if not isinstance(raw.get("idempotency_key"), str) or not raw.get("idempotency_key"):
+            missing.append("idempotency_key")
+        attempt = raw.get("attempt")
+        if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
+            missing.append("attempt")
     missing.extend(channel for channel in spec.seeds if params.get(channel) is None)
     if missing:
         raise HostError(
@@ -281,7 +293,11 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
                 return _envelope(runtime, request_id, started, consistency=consistency,
                                  ok=True, **replay)
 
-        if spec.mutating and if_revision is not None and if_revision != runtime.revision:
+        # Checked for observation-bound operations too, and before the handler
+        # runs, so `transaction.begin` cannot take its checkpoint from a scene
+        # that moved after the caller planned against it.
+        if (spec.mutating or spec.observation_bound) and if_revision is not None \
+                and if_revision != runtime.revision:
             raise HostError(
                 "STALE_REVISION",
                 "scene revision changed",

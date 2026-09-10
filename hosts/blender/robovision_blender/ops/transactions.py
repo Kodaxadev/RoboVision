@@ -76,8 +76,11 @@ def register(registry) -> None:
     # ledger or handed back by a replay to whoever redelivers the request.
     # Replaying these needs deliberate redaction, and that is designed when
     # something actually needs it rather than now.
+    # Observation-bound: a transaction's checkpoint is only worth anything if
+    # it is the state the caller planned against. Opening one against a scene
+    # that has moved produces a rollback target nobody chose.
     registry.add("transaction.begin", begin, stability="alpha", side_effecting=True,
-                 duplicate_policy="terminal_state")
+                 duplicate_policy="terminal_state", observation_bound=True)
     registry.add("transaction.commit", commit, stability="alpha", side_effecting=True,
                  duplicate_policy="terminal_state")
     registry.add("transaction.rollback", rollback, mutating=True, stability="alpha",

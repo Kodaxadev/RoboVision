@@ -209,6 +209,24 @@ Transaction control declares `terminal_state`: a second begin is
 second adopt is refused because the transaction is no longer orphaned. That is a
 deliberate policy now rather than a description of what the code happened to do.
 
+### 7.6.2 Observation-bound is a third property
+
+`mutating` says an operation changes authored state. `side_effecting` says a
+repeat is not free. **`observation_bound`** says the operation's meaning depends
+on the state it was planned against, so under the autonomous contract it must
+name that state and is refused if it moved.
+
+`transaction.begin` is observation-bound without being mutating: a checkpoint
+taken from a scene that changed after the caller decided to edit it is a rollback
+target nobody chose. The three are kept separate because they will not coincide —
+a future external generation request is side-effecting and expensive to repeat
+while not being bound to the current authored revision at all.
+
+Under the autonomous contract, an observation-bound operation requires
+`expected_world`, `expected_coordinate_contract` and `if_revision`, all validated
+before the handler runs. A mutation requires those plus `idempotency_key` and
+`attempt`, because only a mutation can be applied twice.
+
 ### 7.7 The autonomous contract
 
 Low-level delivery stays permissive, so an operator at a console can still poke

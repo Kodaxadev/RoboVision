@@ -436,12 +436,14 @@ def the_autonomous_contract_requires_what_an_unattended_loop_needs(rv: Host) -> 
     expect(code(refused) == "CONTRACT_VIOLATION",
            f"an autonomous mutation ran without its contract: {refused}")
     missing = refused["error"]["data"]["missing"]
-    for field in ("expected_world", "if_revision", "idempotency_key", "attempt"):
+    for field in ("expected_world", "expected_coordinate_contract", "if_revision",
+                  "idempotency_key", "attempt"):
         expect(field in missing, f"the violation did not name {field}: {missing}")
     expect(names() == [], "a contract violation still changed the scene")
 
     complete = dict(raw)
     complete.update(expected_world=world, if_revision=revision,
+                    expected_coordinate_contract=rv.result("system.hello")["coordinate_contract"],
                     idempotency_key="k-strict", attempt=1)
     accepted = rv.runtime.dispatch(complete)
     expect(accepted["ok"], f"a complete autonomous invocation was refused: {accepted}")

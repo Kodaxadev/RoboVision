@@ -10,6 +10,17 @@ PROTOCOL_VERSION = "1.0"
 
 
 AUTONOMOUS = "autonomous"
+CONTRACTS = (AUTONOMOUS,)
+
+
+def _optional_text(value: dict[str, Any], name: str) -> str | None:
+    """An absent field is fine; an empty or mistyped one is a mistake, not a default."""
+    item = value.get(name)
+    if item is None:
+        return None
+    if not isinstance(item, str) or not item:
+        raise RoboVisionError("INVALID_REQUEST", f"{name} must be a non-empty string")
+    return item
 
 
 @dataclass(slots=True)
@@ -73,7 +84,28 @@ class Request:
         revision = value.get("if_revision")
         if revision is not None and (not isinstance(revision, int) or isinstance(revision, bool) or revision < 0):
             raise RoboVisionError("INVALID_REQUEST", "if_revision must be a non-negative integer")
-        return cls(method=method, params=params, id=rid, if_revision=revision, rv=value["rv"])
+
+        # Every field `to_dict` emits is reconstructed here. They were not, so a
+        # request that went through a dict came back stripped of exactly the
+        # fields that make a retry safe — silently, and only on the parsing side,
+        # which is the half a proxy or a test harness uses.
+        key = _optional_text(value, "idempotency_key")
+        world = _optional_text(value, "expected_world")
+        coordinate = _optional_text(value, "expected_coordinate_contract")
+        contract = _optional_text(value, "contract")
+        if contract is not None and contract not in CONTRACTS:
+            raise RoboVisionError("INVALID_REQUEST", f"contract must be one of {CONTRACTS}")
+        attempt = value.get("attempt")
+        if attempt is not None:
+            # `bool` is an `int` in Python, and `attempt: true` is a mistake worth
+            # naming rather than silently reading as attempt 1.
+            if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
+                raise RoboVisionError("INVALID_REQUEST", "attempt must be a positive integer")
+
+        return cls(method=method, params=params, id=rid, if_revision=revision,
+                   idempotency_key=key, attempt=attempt, expected_world=world,
+                   expected_coordinate_contract=coordinate, contract=contract,
+                   rv=value["rv"])
 
 
 @dataclass(slots=True)
