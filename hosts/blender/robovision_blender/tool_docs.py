@@ -40,6 +40,52 @@ def _entry(summary: str, tags: tuple[str, ...], params: dict[str, Any]) -> dict[
 METHOD_DOCS: dict[str, dict[str, Any]] = {
     "system.ping": _entry("Check that the Blender host is responsive.", ("system",), _object()),
     "system.hello": _entry("Discover editor version, security facts, revision and the compact live capability catalog.", ("system", "discovery"), _object()),
+    "truth.measure": _entry(
+        "Measure deterministic asset truth for one or more meshes: geometry validity, normals, "
+        "components, boundaries, intersections, dimensions, transforms and pivots.",
+        ("truth", "inspect", "verify"),
+        _object(
+            {
+                "object": OBJECT_REF,
+                "objects": _array(OBJECT_REF),
+                "kinds": _array({"type": "string", "enum": ["geometry", "spatial"]}),
+                "intentional_open": _array(OBJECT_REF),
+                "check_intersections": BOOLEAN,
+                "epsilon": {"type": "number", "exclusiveMinimum": 0},
+                "max_dimension": {"type": "number", "exclusiveMinimum": 0},
+            }
+        ),
+    ),
+    "truth.geometry": _entry(
+        "Measure geometry truth alone: validity, normals, components, boundaries, intersections.",
+        ("truth", "inspect", "verify"),
+        _object(
+            {
+                "object": OBJECT_REF,
+                "objects": _array(OBJECT_REF),
+                "intentional_open": _array(OBJECT_REF),
+                "check_intersections": BOOLEAN,
+                "epsilon": {"type": "number", "exclusiveMinimum": 0},
+            }
+        ),
+    ),
+    "truth.spatial": _entry(
+        "Measure coordinate and scale truth alone: dimensions, bounds, transforms and pivots.",
+        ("truth", "inspect", "verify"),
+        _object(
+            {
+                "object": OBJECT_REF,
+                "objects": _array(OBJECT_REF),
+                "max_dimension": {"type": "number", "exclusiveMinimum": 0},
+            }
+        ),
+    ),
+    "truth.compare": _entry(
+        "Compare two measurement certificates; refuses when they do not describe the same "
+        "subjects in the same world and coordinate contract.",
+        ("truth", "verify"),
+        _object({"before": {"type": "object"}, "after": {"type": "object"}}, ("before", "after")),
+    ),
     "system.health": _entry(
         "Structured readiness: whether it is presently safe to observe, begin a correction, "
         "mutate, verify, and whether a transaction must be resolved first.",

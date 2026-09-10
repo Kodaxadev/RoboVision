@@ -40,6 +40,11 @@ NOT_AUTHORITATIVE = {
     # Protocol metadata: the catalog does not depend on the scene at all.
     "system.capabilities": "independent",
     "system.method": "independent",
+    # Arithmetic over two certificates the caller already holds. It must not
+    # touch the scene: a comparison that re-read anything would be measuring a
+    # third moment while claiming to compare two, which is the one way this
+    # operation could produce a confident wrong answer.
+    "truth.compare": "independent",
 }
 
 

@@ -74,6 +74,7 @@ before the run is unchanged after it.
 | soak 500 cycles | Blender 5.1.2, Windows | pass, mean 47.8ms, max 55.0ms |
 | soak 250 cycles | Blender 5.2.1 LTS, Linux CI | pass, mean 35.1ms, max 40.9ms |
 | health, cross-editor public flow | Blender 5.1.2, Windows, headless | pass |
+| asset truth: geometry, coordinate/scale, comparison | Blender 5.1.2, Windows, headless | pass |
 
 The Gate 1 baseline fingerprint is identical on both platforms and versions.
 
@@ -237,6 +238,47 @@ the MCP path. Background Blender cannot verify a rollback at all — its own gat
 asserts that — so the rollback here proves the ownership boundary instead, by
 failing `UNDO_UNAVAILABLE` rather than `TRANSACTION_ORPHANED`. The restoration
 claim belongs to an interactive run.
+
+### Deterministic asset truth
+
+`tests/blender/truth_geometry.py` and `tests/blender/truth_spatial.py`
+(headless). Every defect is built by actually damaging a mesh through BMesh
+rather than through RoboVision's own mutation path — a validator proved against a
+hand-written expectation is only proved against the author's idea of the defect,
+and a defect built with the tool under test would show only that the two agree.
+
+Two measurements were wrong before these gates existed and both were found by
+running them:
+
+- **manifoldness and openness were one check.** Blender's `edge.is_manifold` is
+  also false for a boundary edge, so an intentionally open surface failed
+  `geometry.manifold` no matter what the caller declared. They are separate
+  invariants now: non-manifold means topology no surface can have, and openness
+  is the boundary invariant's business alone.
+- **the degeneracy fixture was not degenerate.** Collapsing a single vertex of a
+  cube produces zero-length edges and *no* zero-area face, because the quads
+  either side merely become triangles. A gate written around that would have
+  passed a mesh with a real hole in its topology.
+
+The gates pin: a clean cube fails nothing and leaves nothing unmeasured; one hole
+counts as one hole; a declared-open mesh still reports the hole and is no longer
+a defect; a flipped face is found from the topology rather than from a guessed
+viewpoint; a uniformly reversed solid reads as inside-out and *not* as
+inconsistently wound; a floating island is a floating island; two boxes passing
+through each other are found and an opted-out search is reported as unmeasured
+rather than as none-found; a scaled object is measured in world space beside its
+local extent, in a named coordinate contract; a size gate exists only where a
+brief declared one; a pivot outside its geometry is a placement defect and not a
+geometry defect. Measuring three times moves neither the revision, the
+fingerprint, the object count nor the journal epoch, and measuring identical
+state twice yields the same certificate id while any real change yields a
+different one. Comparison refuses across a changed world, a changed coordinate
+contract, different subjects or different measurement kinds, and does **not**
+refuse across the moved revision and fingerprint a correction is supposed to
+cause.
+
+See [ASSET_TRUTH.md](ASSET_TRUTH.md) for the contract and for what v0
+deliberately does not yet measure.
 
 ### Readiness, and the pins an external agent has to discover
 

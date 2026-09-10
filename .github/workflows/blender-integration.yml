@@ -142,6 +142,20 @@ jobs:
             --python-exit-code 1 \
             --python tests/blender/mcp_session.py
 
+      - name: Run RoboVision geometry truth gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-truth-geometry
+          "${BLENDER_DIR}/blender"             --background             --factory-startup             --python-exit-code 1             --python tests/blender/truth_geometry.py
+
+      - name: Run RoboVision coordinate and comparison truth gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-truth-spatial
+          "${BLENDER_DIR}/blender"             --background             --factory-startup             --python-exit-code 1             --python tests/blender/truth_spatial.py
+
       - name: Run RoboVision health gate
         shell: bash
         run: |

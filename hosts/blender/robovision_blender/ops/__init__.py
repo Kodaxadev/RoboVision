@@ -2,7 +2,9 @@ from __future__ import annotations
 
 
 def register_all(registry) -> None:
-    from . import mesh, mesh_advanced, mesh_query, modifier, objects, perception, scene, system, transactions, viewport
+    from . import (mesh, mesh_advanced, mesh_query, modifier, objects, perception, scene,
+                   system, transactions, truth, viewport)
 
-    for module in (system, scene, objects, mesh, mesh_query, mesh_advanced, modifier, viewport, perception, transactions):
+    for module in (system, scene, objects, mesh, mesh_query, mesh_advanced, modifier, viewport,
+                   perception, truth, transactions):
         module.register(registry)
