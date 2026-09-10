@@ -75,6 +75,7 @@ before the run is unchanged after it.
 | soak 250 cycles | Blender 5.2.1 LTS, Linux CI | pass, mean 35.1ms, max 40.9ms |
 | health, cross-editor public flow | Blender 5.1.2, Windows, headless | pass |
 | asset truth: geometry, coordinate/scale, comparison | Blender 5.1.2, Windows, headless | pass |
+| asset truth: view coverage, reference shape, pattern | Blender 5.1.2, Windows, headless | pass |
 
 The Gate 1 baseline fingerprint is identical on both platforms and versions.
 
@@ -279,6 +280,39 @@ cause.
 
 See [ASSET_TRUTH.md](ASSET_TRUTH.md) for the contract and for what v0
 deliberately does not yet measure.
+
+`tests/blender/truth_coverage.py`, `truth_reference.py` and `truth_pattern.py`
+(all headless — the visibility test and the silhouette are raycast rather than
+rendered, so no graphics context is involved and none is claimed).
+
+The coverage fixture is a slab on a wider base, so the slab's underside is real,
+front-facing from below, and occluded from every direction that could see it. Two
+views from above report 66.6% unobserved; the full 42-view sphere still reaches
+only 88.9%, and the same slab with nothing beneath it reaches 100% — which is
+what proves the shortfall is occlusion rather than a sampler that cannot look
+down. The recommended next view is checked three ways: its predicted gain matches
+the measured gain exactly, no other candidate would have done better, and a fully
+observed asset is recommended nothing.
+
+The reference gate generates its references from known geometry so the expected
+answer is exactly knowable. Identical geometry scores IoU 1.0 and contour
+distance 0.0. A 60% wider box reports 61.8% excess and 0% deficit, localised to
+the left/right sectors with zero vertical error. An asset stretched along the
+front camera's own view axis scores 1.0 from the front and 0.667 from the side —
+the case a single-view metric gets catastrophically wrong.
+
+The pattern gate breaks an eight-fin array one property at a time. A missing fin
+fails the count with every remaining gap still exact. A displaced fin fails
+spacing and nothing else, and passes when the declared tolerance covers it. A
+rotated fin fails orientation and nothing else. An enlarged fin fails dimensional
+consistency and nothing else.
+
+Three metric-definition defects were found by running these rather than by
+review, and all three are recorded in ASSET_TRUTH.md: reference framing that
+absorbed proportion error, a radial gap set that ignored the wrap-around, and
+member extent read from a world-aligned box so that rotation registered as
+resizing.
+
 
 ### Readiness, and the pins an external agent has to discover
 

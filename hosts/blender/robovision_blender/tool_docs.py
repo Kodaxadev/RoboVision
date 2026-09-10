@@ -80,6 +80,79 @@ METHOD_DOCS: dict[str, dict[str, Any]] = {
             }
         ),
     ),
+    "truth.views": _entry(
+        "The deterministic canonical camera set for a subject, derived from its own bounds "
+        "with full projection provenance. Views are independent of any viewport.",
+        ("truth", "perception", "inspect"),
+        _object(
+            {
+                "object": OBJECT_REF,
+                "objects": _array(OBJECT_REF),
+                "level": {"type": "integer", "enum": [0, 1, 2]},
+                "projection": {"type": "string", "enum": ["orthographic", "perspective"]},
+                "width": INTEGER,
+                "height": INTEGER,
+            }
+        ),
+    ),
+    "truth.coverage": _entry(
+        "Which surface has actually been observed from a canonical view set, which regions "
+        "remain unverified, and which camera would reveal the most of what is left.",
+        ("truth", "perception", "verify"),
+        _object(
+            {
+                "object": OBJECT_REF,
+                "objects": _array(OBJECT_REF),
+                "level": {"type": "integer", "enum": [0, 1, 2]},
+                "projection": {"type": "string", "enum": ["orthographic", "perspective"]},
+                "views": _array(STRING),
+                "samples": {"type": "integer", "minimum": 64, "maximum": 65536},
+                "min_coverage": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+                "width": INTEGER,
+                "height": INTEGER,
+            }
+        ),
+    ),
+    "truth.reference": _entry(
+        "Compare the subject silhouette from one named canonical view against a reference "
+        "image: overlap, contour distance and per-sector excess or deficit.",
+        ("truth", "perception", "verify"),
+        _object(
+            {
+                "object": OBJECT_REF,
+                "objects": _array(OBJECT_REF),
+                "reference": STRING,
+                "view": STRING,
+                "frame": _object({"center": VEC3, "radius": NUMBER}),
+                "level": {"type": "integer", "enum": [0, 1, 2]},
+                "projection": {"type": "string", "enum": ["orthographic", "perspective"]},
+                "threshold": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+                "use_alpha": BOOLEAN,
+                "alignment": {"type": "string", "enum": ["declared"]},
+            },
+            ("reference", "view"),
+        ),
+    ),
+    "truth.pattern": _entry(
+        "Check a declared repeated structure — count, spacing, orientation and dimensional "
+        "consistency — against the geometry meant to satisfy it.",
+        ("truth", "verify"),
+        _object(
+            {
+                "components_of": OBJECT_REF,
+                "members": _array(OBJECT_REF),
+                "kind": {"type": "string", "enum": ["linear", "radial", "mirror"]},
+                "count": {"type": "integer", "minimum": 1},
+                "axis": STRING,
+                "center": VEC3,
+                "spacing": NUMBER,
+                "spacing_tolerance": {"type": "number", "minimum": 0},
+                "orientation_tolerance": {"type": "number", "minimum": 0},
+                "dimension_variance": {"type": "number", "minimum": 0},
+            },
+            ("count",),
+        ),
+    ),
     "truth.compare": _entry(
         "Compare two measurement certificates; refuses when they do not describe the same "
         "subjects in the same world and coordinate contract.",

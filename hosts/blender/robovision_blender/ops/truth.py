@@ -14,10 +14,17 @@ from __future__ import annotations
 from typing import Any
 
 from ..registry import AUTHORITATIVE, INDEPENDENT, HostError
-from ..truth import geometry, spatial
+from ..truth import coverage, geometry, pattern, reference, spatial, views
 from ..truth.certificate import comparable
 
 KINDS = ("geometry", "spatial")
+# Coverage is not in the default bundle. It casts a ray per sample per candidate
+# camera, which is worth paying for deliberately and wrong to charge every
+# caller who only wanted to know whether the mesh is manifold.
+ALL_KINDS = KINDS + ("coverage",)
+# Reference comparison is not in the bundle at all: it needs a reference image
+# and a claim about which canonical view that image corresponds to, neither of
+# which a generic "measure this" call could supply.
 
 
 def _epsilon(params: dict[str, Any]) -> float:
@@ -63,6 +70,117 @@ def spatial_truth(params, runtime):
                            runtime=runtime).certificate()
 
 
+def _coverage_options(params: dict[str, Any]) -> dict[str, Any]:
+    level = params.get("level", 1)
+    if level not in views.ICOSPHERE_LEVELS:
+        raise HostError("INVALID_PARAMS",
+                        f"level must be one of {sorted(views.ICOSPHERE_LEVELS)}",
+                        data={"levels": {str(k): v for k, v in views.ICOSPHERE_LEVELS.items()}})
+    projection = str(params.get("projection", views.ORTHOGRAPHIC))
+    if projection not in views.PROJECTIONS:
+        raise HostError("INVALID_PARAMS", f"projection must be one of {views.PROJECTIONS}")
+    selected = params.get("views")
+    if selected is not None and (not isinstance(selected, list)
+                                 or any(not isinstance(v, str) for v in selected)):
+        raise HostError("INVALID_PARAMS", "views must be an array of view ids")
+    minimum = params.get("min_coverage")
+    if minimum is not None:
+        minimum = float(minimum)
+        if not 0.0 < minimum <= 1.0:
+            raise HostError("INVALID_PARAMS", "min_coverage must be within (0, 1]")
+    budget = int(params.get("samples", 4096))
+    if not 64 <= budget <= 65536:
+        raise HostError("INVALID_PARAMS", "samples must be between 64 and 65536")
+    return {
+        "level": level, "projection": projection, "selected": selected,
+        "min_coverage": minimum, "budget": budget,
+        "width": int(params.get("width", 512)), "height": int(params.get("height", 512)),
+    }
+
+
+def coverage_truth(params, runtime):
+    objects, _ = geometry.resolve_subjects(params)
+    try:
+        return coverage.measure(objects, runtime=runtime, **_coverage_options(params)).certificate()
+    except ValueError as exc:
+        raise HostError("INVALID_PARAMS", str(exc)) from exc
+
+
+def canonical_views_for(params, runtime):
+    """The camera set alone, so a caller can render exactly what coverage tested.
+
+    Published separately because the whole point of deriving views from the
+    subject is that two different kinds of evidence can be tied to the same
+    viewpoint. A renderer that constructed its own cameras "the same way" would
+    be a second source of truth about where the observation was taken from.
+    """
+    objects, _ = geometry.resolve_subjects(params)
+    options = _coverage_options(params)
+    corners = []
+    for obj in objects:
+        from mathutils import Vector
+
+        corners.extend(obj.matrix_world @ Vector(corner) for corner in obj.bound_box)
+    frame = views.subject_frame(corners)
+    cameras = views.camera_set(frame, level=options["level"],
+                               projection=options["projection"],
+                               width=options["width"], height=options["height"])
+    del runtime
+    return {
+        "sampler": views.sampler_id(options["level"], options["projection"],
+                                    views.FRAMING_MARGIN),
+        "frame": frame,
+        "count": len(cameras),
+        "cameras": cameras,
+    }
+
+
+def reference_truth(params, runtime):
+    objects, _ = geometry.resolve_subjects(params)
+    options = _coverage_options(params)
+    path = params.get("reference")
+    view = params.get("view")
+    if not isinstance(path, str) or not path:
+        raise HostError("INVALID_PARAMS", "reference is required")
+    if not isinstance(view, str) or not view:
+        raise HostError("INVALID_PARAMS",
+                        "view is required: a silhouette comparison is only meaningful "
+                        "against a named canonical view",
+                        data={"discover": "truth.views"})
+    threshold = float(params.get("threshold", 0.5))
+    if not 0.0 < threshold <= 1.0:
+        raise HostError("INVALID_PARAMS", "threshold must be within (0, 1]")
+    use_alpha = params.get("use_alpha")
+    if use_alpha is not None and not isinstance(use_alpha, bool):
+        raise HostError("INVALID_PARAMS", "use_alpha must be a boolean")
+    # `declared` is the only honest value today: nothing here solves for the
+    # reference's own camera, and the certificate says so in its limits rather
+    # than letting a caller believe the alignment was proved.
+    alignment = str(params.get("alignment", "declared"))
+    if alignment != "declared":
+        raise HostError("INVALID_PARAMS",
+                        "only declared alignment is supported; no camera solve exists yet")
+    frame = params.get("frame")
+    if frame is not None:
+        if not isinstance(frame, dict) or "center" not in frame or "radius" not in frame:
+            raise HostError("INVALID_PARAMS",
+                            "frame must carry center and radius, as returned by truth.views")
+        frame = {"center": [float(v) for v in frame["center"]],
+                 "radius": float(frame["radius"])}
+        if frame["radius"] <= 0.0:
+            raise HostError("INVALID_PARAMS", "frame radius must be positive")
+    return reference.measure(
+        objects, path=path, view=view, level=options["level"],
+        projection=options["projection"], threshold=threshold,
+        use_alpha=use_alpha, alignment=alignment, frame_override=frame,
+        runtime=runtime).certificate()
+
+
+def pattern_truth(params, runtime):
+    members, declaration, subjects = pattern.resolve(params)
+    return pattern.measure(members, declaration, runtime, subjects).certificate()
+
+
 def measure(params, runtime):
     """Every requested kind, taken from one authoritative read of one moment.
 
@@ -74,16 +192,18 @@ def measure(params, runtime):
     kinds = params.get("kinds", list(KINDS))
     if not isinstance(kinds, list) or not kinds:
         raise HostError("INVALID_PARAMS", "kinds must be a non-empty array")
-    unknown = [kind for kind in kinds if kind not in KINDS]
+    unknown = [kind for kind in kinds if kind not in ALL_KINDS]
     if unknown:
         raise HostError("INVALID_PARAMS", f"unknown measurement kinds: {unknown}",
-                        data={"supported": list(KINDS)})
+                        data={"supported": list(ALL_KINDS)})
 
     certificates: dict[str, Any] = {}
     if "geometry" in kinds:
         certificates["geometry"] = geometry_truth(params, runtime)
     if "spatial" in kinds:
         certificates["spatial"] = spatial_truth(params, runtime)
+    if "coverage" in kinds:
+        certificates["coverage"] = coverage_truth(params, runtime)
 
     holds = all(entry["invariants_hold"] for entry in certificates.values())
     unmeasured = {name: reason for entry in certificates.values()
@@ -170,6 +290,15 @@ def register(registry) -> None:
     registry.add("truth.measure", measure, reads=AUTHORITATIVE, stability="alpha")
     registry.add("truth.geometry", geometry_truth, reads=AUTHORITATIVE, stability="alpha")
     registry.add("truth.spatial", spatial_truth, reads=AUTHORITATIVE, stability="alpha")
+    registry.add("truth.coverage", coverage_truth, reads=AUTHORITATIVE, stability="alpha")
+    # The camera contract is pure geometry derived from the subject's bounds and
+    # does not read scene state beyond the subjects it was given, but it is
+    # classified with the rest of the family rather than talked into a cheaper
+    # class: it resolves objects, and an answer about a subject that has been
+    # deleted is not a cheaper answer, it is a wrong one.
+    registry.add("truth.views", canonical_views_for, reads=AUTHORITATIVE, stability="alpha")
+    registry.add("truth.reference", reference_truth, reads=AUTHORITATIVE, stability="alpha")
+    registry.add("truth.pattern", pattern_truth, reads=AUTHORITATIVE, stability="alpha")
     # Pure arithmetic over two certificates the caller already holds: it does not
     # look at the scene at all, and must not, or it would be measuring a third
     # moment while claiming to compare two.

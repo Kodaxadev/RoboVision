@@ -100,23 +100,117 @@ different frames on purpose.
 
 ## 3. Deterministic view coverage
 
-*Not yet implemented.* A canonical deterministic camera set, per-surface
-visibility coverage, identification of unverified regions, and the ability to
-choose further views from what is still uncovered.
+**Implemented** (`truth.views`, `truth.coverage`).
+
+**Cameras are derived from the asset, never from a viewport.** A verification
+view that depended on where somebody left the view rotated would make two
+measurements of the same asset incomparable, and the whole Q0/Q1 mechanic would
+rest on it. Directions come from a geodesic subdivision of an icosahedron —
+level 0/1/2 giving 12/42/162 — rather than a latitude/longitude grid, which piles
+samples at the poles and starves the equator. Framing follows the subject's
+bounding sphere, and the whole construction is identified by a `sampler` id that
+changes when the level, the projection or the margin does, so two coverage
+numbers from different constructions can never be compared as though they were
+the same measurement. Every camera carries position, direction, up, target,
+projection, clipping, image size and both matrices.
+
+**Coverage means surface evidence, not screenshots.** The surface is sampled
+area-weighted with a fixed low-discrepancy sequence, and each sample is observed
+only if it is front-facing to a camera *and* an unoccluded ray reaches it. The
+BVH is built from every subject together, so one part shadowing another counts as
+the occlusion it is — a per-object test would report a slab's underside visible
+because nothing belonging to the slab is in the way.
+
+**It is geometric, so it needs no graphics context.** This is deliberate. The
+definition of the observation does not depend on whether a display happened to be
+available, which means coverage is reproducible in headless CI and on a machine
+with no GPU. `limits` always carries the sampling approximation: a fraction
+computed from four thousand points must not read as a continuous proof.
+
+**The next view is calculated, not suggested.** Visibility is computed for every
+candidate, so the recommendation is the argmax of newly observed area with a
+predicted gain attached — and the gate proves the prediction matches the measured
+gain and that no other candidate would have done better. A model handed a list of
+directions and asked to choose would be guessing at something the system can
+solve exactly, and its guess would not be reproducible.
+
+Unobserved surface is reported as merged regions with area, centroid and example
+faces. Reported as raw grid cells it produced 439 "regions" for a single
+concealed underside — a correct partition and useless to a model deciding where
+to look; merging adjacent cells gives 2.
 
 ## 4. Reference shape truth
 
-*Not yet implemented.* Silhouette masks, silhouette IoU, contour distance,
-reference-view provenance, and an explicit separation between shape that a
-reference view constrains and geometry it cannot see.
+**Implemented** (`truth.reference`).
 
-## 5. Edit locality
+**The silhouette is raycast through the canonical camera, not rendered.** A
+silhouette is geometric occupancy, so raycasting computes it exactly — no
+shading, no anti-aliasing, no render-pipeline dependence, no graphics context,
+and exactly aligned to the matrices the view contract recorded. A shaded render
+of the same camera remains available through the perception path for a human to
+look at; it is simply not what a metric is computed from, because then the metric
+would be partly about the renderer.
+
+**Metrics are hierarchical, and there is no `reference_quality` scalar.**
+`reference.macro.*` carries silhouette IoU, excess and deficit *separately*
+(they are opposite corrections), area ratio, aspect error and per-axis extent
+ratios. `reference.contour.*` carries symmetric Chamfer distance over contour
+pixels — exact, via a Felzenszwalb distance transform, because an approximate
+chamfer mask biases diagonals — plus each one-sided distance, the worst
+excursion, and the worst angular sector with its sign. Two differently shaped
+outlines can preserve substantial overlap, so IoU alone is not enough; contour
+distance alone cannot say which direction the error is in. The namespacing leaves
+room for the secondary-distribution and local-correspondence levels without
+renaming anything.
+
+**Framing must be declared, or the proportion metric lies.** Canonical cameras
+normally frame on the subject's own bounds, which is right for coverage and wrong
+here: a subject that grew is framed from further away, so its silhouette occupies
+much the same part of the frame. Measured — a box widened by 60% reported 24%
+excess. Passing the frame captured with the reference gives 61.8%. Without a
+declared frame the comparison still runs and records
+`reference.absolute_proportion` as unmeasured.
+
+**Scope is stated, not implied.** A single reference constrains only the outline
+from one view; `reference.constrains_hidden_geometry` says so. Nothing solves for
+the reference's own camera, so `reference.camera_calibrated` is declared
+unmeasured and a mismatch in the reference's viewpoint would appear as shape
+error. A reference that thresholds to an empty mask is a setup error reported as
+such, not a score of zero.
+
+## 5. Pattern and repetition truth
+
+**Implemented** (`truth.pattern`). Promoted into v0: exact repetition and spacing
+are a persistent weakness of generated geometry and central to the hard-surface
+class we intend to benchmark.
+
+Declared rather than discovered. Unsupervised detection of every repeated
+structure in arbitrary geometry is a much larger problem, and getting it wrong
+would produce confident nonsense about geometry nobody claimed was patterned. The
+caller declares a `linear`, `radial` or `mirror` pattern with a count, axis,
+optional spacing and optional tolerances; members come from separate objects or
+from the connected islands of one mesh, because arrays are built both ways.
+
+**Count is the only binary.** Seven fins where eight were required is a missing
+fin. Spacing, orientation and dimensional consistency are gradients with declared
+tolerances, and where no tolerance was declared the property is measured and
+reported as ungated rather than held to a number nobody asked for — an array that
+is imperceptibly uneven is usually finished work.
+
+Two definitions were corrected by their own gate. A radial array's wrap-around
+gap is counted, or a ring missing a member looks evenly spaced with one fewer
+interval. And member extent is measured in the member's **own principal frame**:
+read from a world-axis-aligned box, a fin rotated six degrees reported an 8%
+dimensional inconsistency while being exactly the same size as its siblings,
+which made rotating and resizing — different corrections — one number.
+
+## 6. Edit locality
 
 *Not yet implemented.* A declared target region and declared protected entities,
 a pre/post diff, and an out-of-scope change that is measurable and can reject a
 correction on its own.
 
-## 6. Correction evaluation contract
+## 7. Correction evaluation contract
 
 *Not yet implemented as a driver*; the measurement half it needs exists.
 Capture Q0, execute the candidate inside a transaction, capture Q1, require every

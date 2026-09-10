@@ -156,6 +156,39 @@ jobs:
           mkdir -p artifacts/blender-truth-spatial
           "${BLENDER_DIR}/blender"             --background             --factory-startup             --python-exit-code 1             --python tests/blender/truth_spatial.py
 
+      - name: Run RoboVision deterministic view coverage gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-truth-coverage
+          "${BLENDER_DIR}/blender" \
+            --background \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/truth_coverage.py
+
+      - name: Run RoboVision reference shape truth gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-truth-reference
+          "${BLENDER_DIR}/blender" \
+            --background \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/truth_reference.py
+
+      - name: Run RoboVision pattern and repetition truth gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-truth-pattern
+          "${BLENDER_DIR}/blender" \
+            --background \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/truth_pattern.py
+
       - name: Run RoboVision health gate
         shell: bash
         run: |
