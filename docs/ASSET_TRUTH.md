@@ -204,6 +204,36 @@ read from a world-axis-aligned box, a fin rotated six degrees reported an 8%
 dimensional inconsistency while being exactly the same size as its siblings,
 which made rotating and resizing — different corrections — one number.
 
+**Known limit: orientation is measured between members, not against the pattern
+frame.** `pattern.max_angular_deviation` is the largest disagreement between a
+member's own principal axis and its siblings'. That is exactly right for a
+repeated part and silently wrong for an array whose members turn *with* the
+array: five brackets facing outward around a ring would report a 72 degree
+"deviation" that is the design. The limit is disclosed rather than worked around
+— `rvbench:correction-transfer/v2` authors its radial brackets co-oriented and
+says so in its brief and manifest, instead of the validator being adjusted to
+suit a benchmark.
+
+The general fix, recorded here and deliberately not built yet, is an
+`orientation_mode` on the declaration:
+
+| mode | meaning |
+| --- | --- |
+| `co_oriented` | every member shares one orientation (today's only behaviour) |
+| `radial_outward` / `radial_inward` | members face away from / toward the axis |
+| `tangent_clockwise` / `tangent_counterclockwise` | members face along the ring |
+| `custom_reference_axis` | the caller supplies the intended per-member frame |
+
+That would separate three things this metric currently conflates: **placement
+angle** — where around the ring a member sits; **member orientation** — which way
+it faces; and **roll** — how it is turned about its own intended axis. Placement
+is already measured well by radial spacing, which is why v2 remains a fair test
+of the fault it actually contains.
+
+Not now. It is a real piece of modelling work, and doing it between a benchmark
+freeze and its first run would be the exact thing this project refuses: changing
+what a measurement means while a comparison is in flight.
+
 ## 6. Edit locality
 
 **Implemented** (`truth.locality`).
