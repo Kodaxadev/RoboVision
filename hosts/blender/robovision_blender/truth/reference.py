@@ -87,7 +87,9 @@ def _triangles(objects: list):
 
 def measure(objects: list, *, path: str, view: str, level: int, projection: str,
             threshold: float, use_alpha: bool | None, alignment: str,
-            frame_override: dict[str, Any] | None, runtime) -> Measurement:
+            frame_override: dict[str, Any] | None,
+            reference_subjects: list[str] | None, subject_set: str | None,
+            runtime) -> Measurement:
     """Compare one canonical view's silhouette against one reference image.
 
     The framing is the subtle part, and getting it wrong makes the whole metric
@@ -136,10 +138,11 @@ def measure(objects: list, *, path: str, view: str, level: int, projection: str,
         measurement.unmeasured("reference.silhouette_agreement",
                                "the reference image thresholded to an empty mask; "
                                "check threshold and whether alpha should be used")
-        measurement.pins = pins_for(runtime, [])
+        measurement.pins = pins_for(runtime, [], subject_set)
         _provenance(measurement, camera, frame, digest, path, view, level, projection,
                     threshold, resolved_alpha, alignment, width, height,
                     frame_override is not None)
+        _subject_set(measurement, objects, reference_subjects)
         return measurement
 
     _record(measurement, subject_mask, reference_mask, width, height)
@@ -154,11 +157,47 @@ def measure(objects: list, *, path: str, view: str, level: int, projection: str,
         "mesh_revision": None,
         "sectors": masks.sectors(subject_mask, reference_mask, width, height),
     })
-    measurement.pins = pins_for(runtime, measurement.subjects)
+    measurement.pins = pins_for(runtime, measurement.subjects, subject_set)
     _provenance(measurement, camera, frame, digest, path, view, level, projection,
                 threshold, resolved_alpha, alignment, width, height,
                 frame_override is not None)
+    _subject_set(measurement, objects, reference_subjects)
     return measurement
+
+
+def _subject_set(measurement: Measurement, objects: list,
+                 reference_subjects: list[str] | None) -> None:
+    """Whether the reference depicts the same parts the measurement covers.
+
+    Unknowable from an image alone, so it is declared unmeasured by default
+    rather than assumed. That default is not pedantry: on the first Artist Loop
+    run a reference had been rendered over one extra object, and because nothing
+    recorded what the picture contained, the extra silhouette was attributed to
+    the subject as a 59% width deficit. The correction that followed went after
+    the wrong part and was rejected for improving too little — a wrong answer
+    that looked entirely reasonable at every step.
+
+    A reference produced by `truth.silhouette` does carry its subject list, so a
+    caller can pass it back and have the mismatch named instead.
+    """
+    from ..identity import object_id
+
+    if reference_subjects is None:
+        measurement.unmeasured(
+            "reference.subject_set",
+            "an image cannot say which parts it depicts; pass reference_subjects "
+            "from truth.silhouette to have the comparison verify that the reference "
+            "covers the same subjects being measured")
+        return
+    measured = {object_id(obj) for obj in objects} | {obj.name for obj in objects}
+    declared = set(reference_subjects)
+    if declared <= measured:
+        return
+    measurement.unmeasured(
+        "reference.subject_set",
+        "the reference depicts subjects the measurement does not cover: "
+        + ", ".join(sorted(declared - measured))
+        + "; their silhouette will be read as subject shape error")
 
 
 def _provenance(measurement: Measurement, camera, frame, digest, path, view, level,

@@ -66,7 +66,8 @@ def _pivot_offset(obj, world: dict[str, Any]) -> tuple[float, bool]:
     return round((origin - center).length, 9), inside
 
 
-def measure(objects: list, *, max_dimension: float | None, runtime) -> Measurement:
+def measure(objects: list, *, max_dimension: float | None,
+            subject_set: str | None, runtime) -> Measurement:
     """Size, placement and frame for every subject, plus the combined extent."""
     from .certificate import pins_for
 
@@ -152,6 +153,6 @@ def measure(objects: list, *, max_dimension: float | None, runtime) -> Measureme
         "another editor's frame is a separate cross-editor certificate, not an "
         "assumption this measurement makes")
 
-    measurement.pins = pins_for(runtime, measurement.subjects)
+    measurement.pins = pins_for(runtime, measurement.subjects, subject_set)
     measurement.pins["frame"] = {"coordinate_contract": coordinate_contract(), **units()}
     return measurement

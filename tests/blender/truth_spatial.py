@@ -187,8 +187,90 @@ def two_unrelated_measurements_are_refused_rather_than_averaged(rv: Host) -> Non
         allowed["improved"] == [] and allowed["regressed"] == [] and allowed["changed"] == [])
 
 
+def a_pattern_stays_comparable_when_a_member_is_restored(rv: Host) -> None:
+    """The rule the first Artist Loop correction falsified.
+
+    A pattern is identified by what was declared, not by whichever objects
+    currently satisfy it. Requiring a stable membership made restoring a missing
+    member unevaluable — the one correction the count invariant exists to
+    demand — because adding it changed the subject set. Every other kind of
+    measurement genuinely is about its subjects and still refuses.
+    """
+    clean_scene()
+    for index in range(4):
+        cube(rv, f"Bar_{index}", size=0.2)
+        bpy.data.objects[f"Bar_{index}"].location = (index * 0.5, 0.0, 0.0)
+    bpy.context.view_layer.update()
+    rv.runtime.mark_dirty()
+
+    spec = {"kind": "linear", "count": 4, "axis": "x", "spacing": 0.5,
+            "spacing_tolerance": 0.01}
+    complete = rv.result("truth.pattern", {**spec, "members": [f"Bar_{i}" for i in range(4)]})
+    missing = rv.result("truth.pattern", {**spec, "members": [f"Bar_{i}" for i in (0, 1, 3)]})
+
+    delta = rv.result("truth.compare", {"before": missing, "after": complete})
+    FINDINGS["pattern_restore_comparable"] = True
+    FINDINGS["pattern_restore_fixed"] = delta["invariants_fixed"]
+    FINDINGS["pattern_restore_improved"] = "pattern.spacing_max_error" in delta["improved"]
+
+    # A different declaration is still a different measurement.
+    other = rv.result("truth.pattern",
+                      {**spec, "spacing": 0.25,
+                       "members": [f"Bar_{i}" for i in range(4)]})
+    refused = rv.call("truth.compare", {"before": other, "after": complete},
+                      ok=False, code="INCOMPARABLE_MEASUREMENTS")
+    FINDINGS["pattern_declaration_reason"] = refused["error"]["data"]["reason"]
+
+
+def a_declared_asset_survives_a_part_being_added(rv: Host) -> None:
+    """The rule the first Artist Loop run falsified a second time.
+
+    Restoring a missing part changes the subject set of every asset-level
+    measurement at once, so requiring a stable set made structural corrections —
+    most corrections there are — impossible to evaluate. A caller that declares
+    what the measurements are *of* may add or remove a part; a caller that names
+    three objects and nothing else still cannot.
+    """
+    clean_scene()
+    cube(rv, "PartA", size=1.0)
+    cube(rv, "PartB", size=1.0)
+    bpy.data.objects["PartB"].location = (2.0, 0.0, 0.0)
+    bpy.context.view_layer.update()
+    rv.runtime.mark_dirty()
+
+    declared = {"subject_set": "asset:rig"}
+    before = rv.result("truth.geometry", {"objects": ["PartA", "PartB"], **declared})
+    undeclared_before = rv.result("truth.geometry", {"objects": ["PartA", "PartB"]})
+
+    cube(rv, "PartC", size=1.0)
+    bpy.data.objects["PartC"].location = (4.0, 0.0, 0.0)
+    bpy.context.view_layer.update()
+    rv.runtime.mark_dirty()
+
+    after = rv.result("truth.geometry",
+                      {"objects": ["PartA", "PartB", "PartC"], **declared})
+    undeclared_after = rv.result("truth.geometry", {"objects": ["PartA", "PartB", "PartC"]})
+
+    delta = rv.result("truth.compare", {"before": before, "after": after})
+    FINDINGS["asset_grew_comparable"] = True
+    FINDINGS["asset_grew_components"] = delta["metrics"]["geometry.components"]["movement"]
+
+    refused = rv.call("truth.compare",
+                      {"before": undeclared_before, "after": undeclared_after},
+                      ok=False, code="INCOMPARABLE_MEASUREMENTS")
+    FINDINGS["undeclared_reason"] = refused["error"]["data"]["reason"]
+
+    other = rv.result("truth.geometry",
+                      {"objects": ["PartA", "PartB", "PartC"], "subject_set": "asset:other"})
+    mismatched = rv.call("truth.compare", {"before": before, "after": other},
+                         ok=False, code="INCOMPARABLE_MEASUREMENTS")
+    FINDINGS["different_set_reason"] = mismatched["error"]["data"]["reason"]
+
+
 def main() -> None:
     rv = Host("truth-spatial")
+    a_declared_asset_survives_a_part_being_added(rv)
+    a_pattern_stays_comparable_when_a_member_is_restored(rv)
     size_and_pivot_are_measured_in_a_named_frame(rv)
     a_pivot_nowhere_near_its_geometry_is_a_defect(rv)
     a_certificate_is_deterministic_and_measuring_authors_nothing(rv)
@@ -267,6 +349,30 @@ def main() -> None:
     expect(FINDINGS["moved_state_unchanged"],
            "a moved revision or fingerprint interfered with the comparison, and those are "
            "exactly what a correction is supposed to change")
+
+    expect(FINDINGS["asset_grew_comparable"],
+           "adding a part to a declared asset made its measurements incomparable, "
+           "which makes every structural correction unevaluable")
+    expect(FINDINGS["asset_grew_components"] == "changed",
+           f"the added part did not register: {FINDINGS['asset_grew_components']}")
+    expect(FINDINGS["undeclared_reason"] == "different_subjects",
+           f"an undeclared caller lost the strict default: "
+           f"{FINDINGS['undeclared_reason']}")
+    expect(FINDINGS["different_set_reason"] == "different_subject_set",
+           f"two different declared assets compared as one: "
+           f"{FINDINGS['different_set_reason']}")
+
+    expect(FINDINGS["pattern_restore_comparable"],
+           "restoring a missing pattern member was not comparable against its own "
+           "declaration, which makes the count invariant impossible to satisfy")
+    expect("pattern.count_matches" in FINDINGS["pattern_restore_fixed"],
+           f"the restored count was not reported as fixed: "
+           f"{FINDINGS['pattern_restore_fixed']}")
+    expect(FINDINGS["pattern_restore_improved"],
+           "closing the double gap did not read as a spacing improvement")
+    expect(FINDINGS["pattern_declaration_reason"] == "different_pattern_declaration",
+           f"two different declarations compared as one pattern: "
+           f"{FINDINGS['pattern_declaration_reason']}")
 
     (artifact_dir("blender-truth-spatial") / "findings.txt").write_text(
         "\n".join(f"{key}={value}" for key, value in sorted(FINDINGS.items())) + "\n",

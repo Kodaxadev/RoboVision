@@ -245,6 +245,74 @@ def a_reference_from_a_different_camera_is_not_a_shape_error(rv: Host) -> None:
     FINDINGS["missing_view_refused"] = "view is required" in missing["error"]["message"]
 
 
+def a_silhouette_can_be_produced_and_measured_against_itself(rv: Host) -> None:
+    """The setup path a client outside the editor previously did not have.
+
+    Producing a reference used to require reaching into Blender directly, so a
+    comparison could be measured but never established from the public surface.
+    This closes that: render the occupancy, then measure the same geometry
+    against it in the same declared frame and expect exact agreement — which is
+    only true if the two share one camera contract rather than two that agree by
+    convention.
+    """
+    clean_scene()
+    cube(rv, "Rendered", size=2.0)
+    # Asymmetric in X and Y on purpose: a box with square plan has front and side
+    # silhouettes of identical area, so occupied fraction could not tell the two
+    # views apart and the check below would pass for the wrong reason.
+    bpy.data.objects["Rendered"].scale = (1.0, 1.6, 1.7)
+    bpy.context.view_layer.update()
+    rv.runtime.mark_dirty()
+
+    front = axis_view(rv, "Rendered", FRONT_AXIS, -1.0)
+    path = WORK / "produced.png"
+    produced = rv.result("truth.silhouette",
+                         {"object": "Rendered", "view": front, "path": str(path),
+                          "width": 96, "height": 96})
+    FINDINGS["produced_path_exists"] = Path(produced["artifact"]["path"]).is_file()
+    FINDINGS["produced_fraction"] = round(produced["occupied_fraction"], 4)
+    FINDINGS["produced_content"] = produced["content"]
+    FINDINGS["produced_framing"] = produced["framing"]
+
+    measured = rv.result("truth.reference",
+                         {"object": "Rendered", "reference": produced["artifact"]["path"],
+                          "view": front,
+                          "frame": {"center": produced["frame"]["center"],
+                                    "radius": produced["frame"]["radius"]}})
+    FINDINGS["produced_iou"] = round(
+        metrics(measured)["reference.macro.silhouette_iou"], 4)
+    FINDINGS["produced_contour"] = round(
+        metrics(measured)["reference.contour.mean_distance"], 6)
+
+    # A different view of the same asset is a different silhouette, or the view
+    # argument is doing nothing.
+    side = axis_view(rv, "Rendered", SIDE_AXIS, 1.0)
+    other = rv.result("truth.silhouette",
+                      {"object": "Rendered", "view": side, "path": str(WORK / "other.png"),
+                       "width": 96, "height": 96,
+                       "frame": {"center": produced["frame"]["center"],
+                                 "radius": produced["frame"]["radius"]}})
+    FINDINGS["produced_views_differ"] = (
+        round(other["occupied_fraction"], 6) != round(produced["occupied_fraction"], 6))
+
+    # What the picture contains, which the picture cannot say.
+    FINDINGS["produced_subjects"] = produced["subject_names"]
+    over_covered = rv.result("truth.reference",
+                             {"object": "Rendered",
+                              "reference": produced["artifact"]["path"], "view": front,
+                              "reference_subjects": produced["subjects"] + ["b3d:ghost"]})
+    FINDINGS["subject_mismatch_limit"] = over_covered["limits"].get("reference.subject_set")
+    matched = rv.result("truth.reference",
+                        {"object": "Rendered",
+                         "reference": produced["artifact"]["path"], "view": front,
+                         "reference_subjects": produced["subjects"]})
+    FINDINGS["subject_match_limit"] = matched["limits"].get("reference.subject_set")
+
+    rv.call("truth.silhouette", {"object": "Rendered", "view": "v999"},
+            ok=False, code="INVALID_PARAMS")
+    rv.call("truth.silhouette", {"object": "Rendered"}, ok=False, code="INVALID_PARAMS")
+
+
 def an_empty_reference_is_a_setup_error_not_a_score_of_zero(rv: Host) -> None:
     clean_scene()
     cube(rv, "Box", size=2.0)
@@ -271,6 +339,7 @@ def main() -> None:
     widening_the_asset_shows_up_as_excess_not_deficit(rv)
     a_side_defect_is_invisible_from_the_front(rv)
     a_reference_from_a_different_camera_is_not_a_shape_error(rv)
+    a_silhouette_can_be_produced_and_measured_against_itself(rv)
     an_empty_reference_is_a_setup_error_not_a_score_of_zero(rv)
 
     expect(FINDINGS["self_iou"] >= 0.999,
@@ -337,6 +406,37 @@ def main() -> None:
            "an unknown view id was accepted")
     expect(FINDINGS["missing_view_refused"],
            "a silhouette comparison ran without being told which view it is against")
+
+    expect(FINDINGS["produced_path_exists"], "the silhouette artifact was not written")
+    expect(0.0 < FINDINGS["produced_fraction"] < 1.0,
+           f"the produced silhouette occupies an implausible fraction of the frame: "
+           f"{FINDINGS['produced_fraction']}")
+    expect("occupancy" in FINDINGS["produced_content"],
+           f"the artifact did not describe itself as geometric occupancy: "
+           f"{FINDINGS['produced_content']}")
+    expect(FINDINGS["produced_framing"] == "subject_relative",
+           "the artifact did not record which framing produced it")
+    expect(FINDINGS["produced_iou"] >= 0.999,
+           f"geometry did not agree with a silhouette produced from itself, so the "
+           f"producing and measuring cameras are not the same contract: "
+           f"{FINDINGS['produced_iou']}")
+    expect(FINDINGS["produced_contour"] <= 1e-6,
+           "a silhouette measured against itself reported contour error")
+    expect(FINDINGS["produced_subjects"] == ["Rendered"],
+           f"the silhouette did not record what it depicted: "
+           f"{FINDINGS['produced_subjects']}")
+    expect("b3d:ghost" in (FINDINGS["subject_mismatch_limit"] or ""),
+           f"a reference covering a subject the measurement does not was not named: "
+           f"{FINDINGS['subject_mismatch_limit']}")
+    expect(FINDINGS["subject_match_limit"] is None,
+           f"a reference covering exactly the measured subjects was still flagged: "
+           f"{FINDINGS['subject_match_limit']}")
+    expect("reference.subject_set" in FINDINGS["self_limits"],
+           f"a reference with no declared subjects did not say the set is unknown: "
+           f"{FINDINGS['self_limits']}")
+
+    expect(FINDINGS["produced_views_differ"],
+           "two different canonical views produced the same silhouette")
 
     expect(FINDINGS["empty_metrics"] == [],
            f"an empty reference produced metrics: {FINDINGS['empty_metrics']}")

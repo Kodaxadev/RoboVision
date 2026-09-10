@@ -133,6 +133,25 @@ METHOD_DOCS: dict[str, dict[str, Any]] = {
             ("reference", "view"),
         ),
     ),
+    "truth.silhouette": _entry(
+        "Write the subjects' projected geometric occupancy from one canonical view to a "
+        "PNG. Not a render: no shading, materials or lighting.",
+        ("truth", "perception", "evidence"),
+        _object(
+            {
+                "object": OBJECT_REF,
+                "objects": _array(OBJECT_REF),
+                "view": STRING,
+                "path": STRING,
+                "frame": _object({"center": VEC3, "radius": NUMBER}),
+                "level": {"type": "integer", "enum": [0, 1, 2]},
+                "projection": {"type": "string", "enum": ["orthographic", "perspective"]},
+                "width": INTEGER,
+                "height": INTEGER,
+            },
+            ("view",),
+        ),
+    ),
     "truth.pattern": _entry(
         "Check a declared repeated structure — count, spacing, orientation and dimensional "
         "consistency — against the geometry meant to satisfy it.",

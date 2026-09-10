@@ -120,7 +120,8 @@ class Measurement:
         }
 
 
-def pins_for(runtime, subjects: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def pins_for(runtime, subjects: list[dict[str, Any]] | None = None,
+             subject_set: str | None = None) -> dict[str, Any]:
     """The state this measurement belongs to.
 
     The coordinate contract is in here for the same reason a mutation pins it: a
@@ -139,6 +140,12 @@ def pins_for(runtime, subjects: list[dict[str, Any]] | None = None) -> dict[str,
         "revision": runtime.revision,
         "fingerprint": runtime.current_snapshot()["fingerprint"],
     }
+    if subject_set is not None:
+        # What this measurement is *about*, when that is not the enumerated list.
+        # A caller measuring "the asset" owns its membership and may legitimately
+        # add or remove a part; a caller measuring three named objects does not.
+        # Declaring it is what separates the two, and the default stays strict.
+        pins["subject_set"] = subject_set
     if subjects is not None:
         # Per-subject topology revisions, because the authored revision does not
         # move for every change a mesh index depends on.
@@ -149,23 +156,66 @@ def pins_for(runtime, subjects: list[dict[str, Any]] | None = None) -> dict[str,
     return pins
 
 
+# Which measurements are *about* their subject set, and which are about
+# something the subject set merely happens to satisfy. Getting this wrong makes
+# whole classes of correction unevaluable, so it is stated rather than assumed.
+_SUBJECT_IDENTIFIED = ("geometry", "spatial", "reference", "coverage")
+
+
+def _pattern_declaration(certificate: dict[str, Any]) -> dict[str, Any]:
+    declaration = dict(certificate["pins"].get("pattern", {}))
+    # The members are not part of the pattern's identity; everything else is.
+    declaration.pop("schema", None)
+    return declaration
+
+
 def comparable(before: dict[str, Any], after: dict[str, Any]) -> tuple[bool, str | None]:
     """Whether two certificates describe the same thing measured twice.
 
-    Refused rather than warned about. A Q0/Q1 pair whose world, coordinate
-    contract or subject set differs is not a before and an after; it is two
-    unrelated measurements, and letting an epsilon comparison run over them would
-    produce a confident number about nothing.
+    Refused rather than warned about. A Q0/Q1 pair whose world or coordinate
+    contract differs is not a before and an after; it is two unrelated
+    measurements, and letting an epsilon comparison run over them would produce a
+    confident number about nothing.
 
     The revision and the fingerprint are deliberately *not* required to match —
     they are exactly what a correction is supposed to change.
+
+    Neither, for a pattern, is the membership. That distinction was measured
+    rather than reasoned: the first Artist Loop correction restored a missing
+    eighth fin, improved the array's worst spacing error sixfold, and was
+    rejected for `different_subjects` — because adding the member changed the set
+    of objects the measurement was taken over. A pattern is identified by what
+    was *declared* (kind, count, axis, pitch, tolerances), not by whichever
+    objects currently satisfy it, so requiring a stable membership made the one
+    correction the count invariant exists to demand impossible to evaluate. Every
+    other kind is genuinely about its subjects and still requires them to match.
     """
-    if before.get("kind") != after.get("kind"):
+    kind = before.get("kind")
+    if kind != after.get("kind"):
         return False, "different_measurement_kind"
     for pin in ("world_incarnation", "coordinate_contract", "state_domain"):
         if before["pins"].get(pin) != after["pins"].get(pin):
             return False, "pin_changed:" + pin
-    if sorted(s["object"] for s in before["subjects"]) \
+    if kind == "pattern":
+        if _pattern_declaration(before) != _pattern_declaration(after):
+            return False, "different_pattern_declaration"
+        return True, None
+    declared = before["pins"].get("subject_set")
+    if declared is not None or after["pins"].get("subject_set") is not None:
+        # Both sides must name the same thing, and naming it is a claim the caller
+        # is making: that these two measurements are of one asset whose membership
+        # it controls. Measured, on the first Artist Loop run: restoring a missing
+        # eighth fin changed the subject set of geometry, spatial, coverage and
+        # both reference comparisons at once, and every one of them refused to
+        # compare — so no correction that adds or removes a part could be
+        # evaluated at all, which is most structural corrections there are. The
+        # metrics involved are asset-level aggregates and are perfectly meaningful
+        # across a membership change; what the old rule was really protecting is
+        # that both measurements describe the same declared thing.
+        if declared != after["pins"].get("subject_set"):
+            return False, "different_subject_set"
+        return True, None
+    if kind in _SUBJECT_IDENTIFIED and sorted(s["object"] for s in before["subjects"]) \
             != sorted(s["object"] for s in after["subjects"]):
         return False, "different_subjects"
     return True, None

@@ -15,7 +15,7 @@ from typing import Any
 
 from ..registry import AUTHORITATIVE, INDEPENDENT, HostError
 from ..truth import (coverage, evaluate as evaluation, geometry, locality, pattern,
-                     reference, spatial, views)
+                     reference, silhouette, spatial, views)
 from ..truth.certificate import comparable
 
 KINDS = ("geometry", "spatial")
@@ -26,6 +26,22 @@ ALL_KINDS = KINDS + ("coverage",)
 # Reference comparison is not in the bundle at all: it needs a reference image
 # and a claim about which canonical view that image corresponds to, neither of
 # which a generic "measure this" call could supply.
+
+
+def _subject_set(params: dict[str, Any]) -> str | None:
+    """What this measurement is about, when it is not the enumerated objects.
+
+    A label rather than a list: it says "these measurements are of one asset
+    whose membership I control", which is what makes a correction that adds or
+    removes a part evaluable. Optional, so an ad-hoc caller keeps the stricter
+    default of being pinned to exactly the objects it named.
+    """
+    raw = params.get("subject_set")
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw:
+        raise HostError("INVALID_PARAMS", "subject_set must be a non-empty string")
+    return raw
 
 
 def _epsilon(params: dict[str, Any]) -> float:
@@ -61,6 +77,7 @@ def geometry_truth(params, runtime):
         # opt-out rather than always paid for. It defaults on: a loop that
         # forgot to ask should get the stricter answer, not the faster one.
         check_intersections=bool(params.get("check_intersections", True)),
+        subject_set=_subject_set(params),
         runtime=runtime,
     ).certificate()
 
@@ -68,6 +85,7 @@ def geometry_truth(params, runtime):
 def spatial_truth(params, runtime):
     objects, _ = geometry.resolve_subjects(params)
     return spatial.measure(objects, max_dimension=_max_dimension(params),
+                           subject_set=_subject_set(params),
                            runtime=runtime).certificate()
 
 
@@ -102,7 +120,9 @@ def _coverage_options(params: dict[str, Any]) -> dict[str, Any]:
 def coverage_truth(params, runtime):
     objects, _ = geometry.resolve_subjects(params)
     try:
-        return coverage.measure(objects, runtime=runtime, **_coverage_options(params)).certificate()
+        return coverage.measure(objects, runtime=runtime,
+                                subject_set=_subject_set(params),
+                                **_coverage_options(params)).certificate()
     except ValueError as exc:
         raise HostError("INVALID_PARAMS", str(exc)) from exc
 
@@ -136,6 +156,36 @@ def canonical_views_for(params, runtime):
     }
 
 
+def _frame(params: dict[str, Any]) -> dict[str, Any] | None:
+    """A fixed measurement frame, declared by the caller.
+
+    Shared by every operation that places canonical cameras, because a frame read
+    two slightly different ways would put two measurements in two spaces while
+    both claimed to be canonical.
+    """
+    frame = params.get("frame")
+    if frame is None:
+        return None
+    if not isinstance(frame, dict) or "center" not in frame or "radius" not in frame:
+        raise HostError("INVALID_PARAMS",
+                        "frame must carry center and radius, as returned by truth.views")
+    resolved = {"center": [float(v) for v in frame["center"]],
+                "radius": float(frame["radius"])}
+    if resolved["radius"] <= 0.0:
+        raise HostError("INVALID_PARAMS", "frame radius must be positive")
+    return resolved
+
+
+def _reference_subjects(params: dict[str, Any]) -> list[str] | None:
+    raw = params.get("reference_subjects")
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+        raise HostError("INVALID_PARAMS",
+                        "reference_subjects must be an array of object ids or names")
+    return raw
+
+
 def reference_truth(params, runtime):
     objects, _ = geometry.resolve_subjects(params)
     options = _coverage_options(params)
@@ -161,25 +211,38 @@ def reference_truth(params, runtime):
     if alignment != "declared":
         raise HostError("INVALID_PARAMS",
                         "only declared alignment is supported; no camera solve exists yet")
-    frame = params.get("frame")
-    if frame is not None:
-        if not isinstance(frame, dict) or "center" not in frame or "radius" not in frame:
-            raise HostError("INVALID_PARAMS",
-                            "frame must carry center and radius, as returned by truth.views")
-        frame = {"center": [float(v) for v in frame["center"]],
-                 "radius": float(frame["radius"])}
-        if frame["radius"] <= 0.0:
-            raise HostError("INVALID_PARAMS", "frame radius must be positive")
     return reference.measure(
         objects, path=path, view=view, level=options["level"],
         projection=options["projection"], threshold=threshold,
-        use_alpha=use_alpha, alignment=alignment, frame_override=frame,
+        use_alpha=use_alpha, alignment=alignment, frame_override=_frame(params),
+        reference_subjects=_reference_subjects(params),
+        subject_set=_subject_set(params),
         runtime=runtime).certificate()
 
 
 def pattern_truth(params, runtime):
     members, declaration, subjects = pattern.resolve(params)
     return pattern.measure(members, declaration, runtime, subjects).certificate()
+
+
+def silhouette_render(params, runtime):
+    """Produce the silhouette a reference comparison would be measured against.
+
+    Same camera contract, same occupancy, written to a file — so a blockout
+    profile can be captured and later compared without any client needing
+    private access to the editor.
+    """
+    objects, _ = geometry.resolve_subjects(params)
+    options = _coverage_options(params)
+    view = params.get("view")
+    if not isinstance(view, str) or not view:
+        raise HostError("INVALID_PARAMS", "view is required",
+                        data={"discover": "truth.views"})
+    del runtime
+    return silhouette.render(
+        objects, path=params.get("path"), view=view, level=options["level"],
+        projection=options["projection"], width=options["width"],
+        height=options["height"], frame_override=_frame(params))
 
 
 def locality_truth(params, runtime):
@@ -333,6 +396,10 @@ def register(registry) -> None:
     # deleted is not a cheaper answer, it is a wrong one.
     registry.add("truth.views", canonical_views_for, reads=AUTHORITATIVE, stability="alpha")
     registry.add("truth.reference", reference_truth, reads=AUTHORITATIVE, stability="alpha")
+    # Evidence-producing: it writes a durable artifact, so it is declared the way
+    # the capture operations are rather than looking like a free read.
+    registry.add("truth.silhouette", silhouette_render, reads=AUTHORITATIVE,
+                 evidence=True, stability="alpha")
     registry.add("truth.pattern", pattern_truth, reads=AUTHORITATIVE, stability="alpha")
     registry.add("truth.locality", locality_truth, reads=AUTHORITATIVE, stability="alpha")
     # Pure arithmetic over two certificates the caller already holds: it does not

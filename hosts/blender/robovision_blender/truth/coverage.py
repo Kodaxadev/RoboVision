@@ -160,7 +160,7 @@ def _visible(tree: BVHTree, sample: dict[str, Any], camera: dict[str, Any],
 
 def measure(objects: list, *, level: int, projection: str, width: int, height: int,
             budget: int, selected: list[str] | None, min_coverage: float | None,
-            runtime) -> Measurement:
+            subject_set: str | None, runtime) -> Measurement:
     """Coverage from a chosen view set, and the best camera to add next."""
     from .certificate import pins_for
 
@@ -170,7 +170,7 @@ def measure(objects: list, *, level: int, projection: str, width: int, height: i
         measurement.metric("coverage.observed_fraction", 0.0,
                            direction=HIGHER_BETTER, unit="fraction")
         measurement.unmeasured("coverage.meets_declared_minimum", "no faces to observe")
-        measurement.pins = pins_for(runtime, [])
+        measurement.pins = pins_for(runtime, [], subject_set)
         return measurement
 
     corners = [corner for face in faces for corner in face["corners"]]
@@ -237,7 +237,7 @@ def measure(objects: list, *, level: int, projection: str, width: int, height: i
         f"coverage is estimated from {len(samples)} area-weighted surface samples, "
         f"not from continuous surface integration")
 
-    measurement.pins = pins_for(runtime, measurement.subjects)
+    measurement.pins = pins_for(runtime, measurement.subjects, subject_set)
     measurement.pins["views"] = {
         "sampler": canonical_views.sampler_id(level, projection,
                                               canonical_views.FRAMING_MARGIN),

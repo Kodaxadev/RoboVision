@@ -166,7 +166,8 @@ def _subject(obj, bm) -> dict[str, Any]:
 
 
 def measure(objects: list, *, intentional_open: set[str], epsilon: float,
-            check_intersections: bool, runtime) -> Measurement:
+            check_intersections: bool, subject_set: str | None,
+            runtime) -> Measurement:
     """Measure every subject, then report the totals a correction is judged on.
 
     Totals rather than per-object numbers because a correction is accepted or
@@ -284,7 +285,7 @@ def measure(objects: list, *, intentional_open: set[str], epsilon: float,
             "geometry.no_self_intersection",
             f"overlap search truncated at {_INTERSECTION_PAIR_CAP} pairs")
 
-    measurement.pins = pins_for(runtime, measurement.subjects)
+    measurement.pins = pins_for(runtime, measurement.subjects, subject_set)
     return measurement
 
 
