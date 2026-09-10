@@ -31,14 +31,48 @@ namespace Kodaxa.RoboVision.Editor
             host.AddTool("object.create", p => CreateObject(p), mutating: true, stability: "alpha");
             host.AddTool("object.delete", p => DeleteObject(p), mutating: true, stability: "alpha");
             host.AddTool("object.transform", p => TransformObject(p), mutating: true, stability: "alpha");
-            host.AddTool("transaction.begin", p => host.Transactions.Begin(p, host.CurrentClientId), stability: "alpha", transactionControl: true);
-            host.AddTool("transaction.commit", p => host.Transactions.Commit(p, host.CurrentClientId), stability: "alpha", transactionControl: true);
-            host.AddTool("transaction.rollback", p => host.Transactions.Rollback(p, host.CurrentClientId), mutating: true, stability: "alpha", transactionControl: true);
+            // All of the transaction verbs are side-effecting although only
+            // rollback moves the scene: "does not advance the revision" is not
+            // the same claim as "safe to execute twice", and a duplicated begin,
+            // commit, adopt or discard is not free.
+            //
+            // They are deliberately not covered by idempotent replay. Each is
+            // already duplicate-safe through its own state machine — a second
+            // begin is TRANSACTION_ACTIVE, a second commit or rollback is
+            // TRANSACTION_FINISHED, a second adopt is refused because the
+            // transaction is no longer orphaned — and begin's response can carry
+            // a recovery token, which must never be stored in a ledger or handed
+            // back by a replay to whoever redelivers the request.
+            //
+            // Begin is observation-bound: a transaction's checkpoint is only
+            // worth anything if it is the state the caller planned against.
+            // Opening one against a scene that has moved produces a rollback
+            // target nobody chose.
+            host.AddTool("transaction.begin", p => host.Transactions.Begin(p, host.CurrentClientId),
+                stability: "alpha", transactionControl: true, sideEffecting: true,
+                duplicatePolicy: RoboVisionHost.DuplicateTerminalState, observationBound: true);
+            host.AddTool("transaction.commit", p => host.Transactions.Commit(p, host.CurrentClientId),
+                stability: "alpha", transactionControl: true, sideEffecting: true,
+                duplicatePolicy: RoboVisionHost.DuplicateTerminalState);
+            host.AddTool("transaction.rollback", p => host.Transactions.Rollback(p, host.CurrentClientId),
+                mutating: true, stability: "alpha", transactionControl: true,
+                duplicatePolicy: RoboVisionHost.DuplicateTerminalState);
             // Adoption is how an interrupted transaction gets an owner again, so
             // it must reach the host without one — and it proves authority with
             // a token rather than with the connection it arrives on.
-            host.AddTool("transaction.adopt", p => host.Transactions.Adopt(p, host.CurrentClientId), stability: "alpha", transactionControl: true);
-            host.AddTool("transaction.discard", p => host.Transactions.Discard(p, host.CurrentClientId), stability: "alpha", transactionControl: true);
+            host.AddTool("transaction.adopt", p => host.Transactions.Adopt(p, host.CurrentClientId),
+                stability: "alpha", transactionControl: true, sideEffecting: true,
+                duplicatePolicy: RoboVisionHost.DuplicateTerminalState);
+            host.AddTool("transaction.discard", p => host.Transactions.Discard(p, host.CurrentClientId),
+                stability: "alpha", transactionControl: true, sideEffecting: true,
+                duplicatePolicy: RoboVisionHost.DuplicateTerminalState);
+            // Read-only, and deliberately cheap: resolving a lost acknowledgement
+            // must not cost an authoritative scene read, must never be the thing
+            // that changes what it is reporting on, and must stay answerable in
+            // play mode — the outcome of a transaction does not depend on which
+            // universe the editor happens to be in when someone asks.
+            host.AddTool("transaction.status", p => host.Transactions.Status(p),
+                reads: RoboVisionHost.ReadsNotified, stability: "alpha");
         }
 
         private static SceneRead ReadOf(JObject stored)

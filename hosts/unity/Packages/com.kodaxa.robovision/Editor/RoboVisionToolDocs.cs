@@ -181,7 +181,42 @@ namespace Kodaxa.RoboVision.Editor
             ["transaction.begin"] = Doc(
                 "Begin a verified Unity Undo transaction and record its scene fingerprint.",
                 new[] { "transaction", "history", "safety" },
-                ObjectSchema(new JObject { ["transaction"] = StringSchema(), ["label"] = StringSchema() })),
+                ObjectSchema(new JObject
+                {
+                    ["transaction"] = StringSchema("A correlation label. The host mints the identity."),
+                    ["label"] = StringSchema(),
+                    ["recovery_verifier"] = StringSchema(
+                        "SHA-256 of a recovery secret you generated and kept. Send this rather "
+                        + "than letting the host mint one: you then hold the credential before "
+                        + "the side effect, so a lost reply or a domain reload cannot strand the "
+                        + "transaction."),
+                    ["recovery_handle"] = StringSchema(
+                        "A non-secret name for this begin. It grants nothing; it lets you "
+                        + "recognise which transaction your secret belongs to if the reply never "
+                        + "arrives.")
+                })),
+            ["transaction.adopt"] = Doc(
+                "Reclaim an orphaned transaction by proving you opened it.",
+                new[] { "transaction", "recovery", "safety" },
+                ObjectSchema(new JObject
+                {
+                    ["transaction"] = StringSchema(),
+                    ["recovery_token"] = StringSchema("The secret whose verifier the host holds."),
+                    ["next_recovery_verifier"] = StringSchema(
+                        "Verifier for the secret that replaces it. Adoption always rotates; "
+                        + "supplying this means you already hold the replacement.")
+                }, "transaction", "recovery_token")),
+            ["transaction.discard"] = Doc(
+                "Give up a transaction rather than claim an outcome for it.",
+                new[] { "transaction", "recovery", "safety" },
+                ObjectSchema(new JObject { ["transaction"] = StringSchema() }, "transaction")),
+            ["transaction.status"] = Doc(
+                "Read what became of a transaction. Never repeats its side effect.",
+                new[] { "transaction", "recovery", "read" },
+                ObjectSchema(new JObject
+                {
+                    ["transaction"] = StringSchema("Omit to ask only about the open transaction.")
+                })),
             ["transaction.commit"] = Doc(
                 "Commit the active Unity transaction, refusing externally contaminated state unless explicitly forced.",
                 new[] { "transaction", "history", "safety" },

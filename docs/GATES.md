@@ -170,7 +170,12 @@ what a candidate branch needs. A retry the host has no record of, an operation
 interrupted between its intent and its result, and a retry naming a replaced
 world are all refused without executing. A transaction that ended keeps its
 tombstones, so a retry after a rollback is told what happened instead of
-resurrecting the operation.
+resurrecting the operation — which the Unity port found this gate was not
+actually testing. The manager never told the invocation ledger anything, and the
+gate wrote the outcome by hand before asserting it, so the assertion proved its
+own edit; a real client's retry would have been answered with no outcome at all.
+The manager now reports a terminal transaction to the ledger on both hosts and
+the gate asserts what the host recorded.
 
 Seeds are enforced rather than encouraged: a test-only stochastic tool is
 refused `SEED_REQUIRED` before any side effect, its seeded retry replays the same

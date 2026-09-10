@@ -31,6 +31,10 @@ namespace Kodaxa.RoboVision.Editor
             var requestId = raw.Value<string>("id");
             RoboVisionUndo.OperationCheckpoint checkpoint = null;
             SceneRead checkpointRead = null;
+            // Visible to the failure paths below: a reservation must never be
+            // left looking like an operation that is still running.
+            JObject intent = null;
+            string key = null;
             // What the answer would have been worth, for a failure that happens
             // after the tool is known. Before that it stays unknown rather than
             // being reported as the strongest class.
@@ -50,6 +54,80 @@ namespace Kodaxa.RoboVision.Editor
                 if (!_tools.TryGetValue(method, out var spec))
                     throw new RoboVisionException("UNKNOWN_METHOD", "unknown method: " + method);
                 consistency = spec.Reads;
+
+                // Which world is open is read out of the editor before anything
+                // is compared against it: the incarnation a rebuilt bridge starts
+                // with is a placeholder until something looks.
+                EnsureWorldSettled();
+
+                // A retry that names the world it was planned against can never
+                // be reinterpreted in a different one. Checked before anything
+                // else, because every answer below would otherwise be about the
+                // wrong world.
+                var expectedWorld = raw.Value<string>("expected_world");
+                if (!String.IsNullOrEmpty(expectedWorld)
+                    && !String.Equals(expectedWorld, WorldIncarnation, StringComparison.Ordinal))
+                {
+                    throw new RoboVisionException(
+                        "STALE_WORLD",
+                        "that request was planned against an editing context that is no longer open",
+                        true,
+                        new JObject
+                        {
+                            ["expected_world"] = expectedWorld,
+                            ["current_world_incarnation"] = WorldIncarnation
+                        });
+                }
+
+                var revisionToken = raw["if_revision"];
+                long? ifRevision = null;
+                if (revisionToken != null && revisionToken.Type != JTokenType.Null)
+                {
+                    if (revisionToken.Type != JTokenType.Integer || revisionToken.Value<long>() < 0)
+                        throw new RoboVisionException(
+                            "INVALID_REQUEST", "if_revision must be a non-negative integer");
+                    ifRevision = revisionToken.Value<long>();
+                }
+
+                AssertAutonomousContract(spec, raw, parameters, ifRevision);
+
+                // The unit and axis convention is pinned the same way the world
+                // is, and for the same reason: what a unit means can be changed
+                // between an agent's observation and its mutation without moving
+                // either the world incarnation or the scene revision. Across two
+                // editors it is stronger than that — Unity is Y up and
+                // left-handed, Blender is Z up and right-handed, so a request
+                // planned in one frame is refused here rather than silently
+                // executed in the other.
+                var expectedContract = raw.Value<string>("expected_coordinate_contract");
+                if (!String.IsNullOrEmpty(expectedContract)
+                    && !String.Equals(expectedContract, RoboVisionRecipe.CoordinateContract(),
+                        StringComparison.Ordinal))
+                {
+                    throw new RoboVisionException(
+                        "COORDINATE_CONTRACT_CHANGED",
+                        "the unit or axis convention changed since this operation was planned",
+                        true,
+                        new JObject
+                        {
+                            ["expected_coordinate_contract"] = expectedContract,
+                            ["current_coordinate_contract"] = RoboVisionRecipe.CoordinateContract(),
+                            ["units"] = RoboVisionRecipe.Units()
+                        });
+                }
+
+                // Randomness and identity are settled before any side effect, so
+                // a lost reply leaves a client able to describe exactly what it
+                // asked for.
+                var seeds = SeedsFor(spec, parameters);
+                var recipe = spec.Mutating ? RecipeFor(spec, parameters, seeds) : null;
+                key = raw.Value<string>("idempotency_key");
+                if (String.IsNullOrEmpty(key)) key = null;
+                var attemptToken = raw["attempt"];
+                var attempt = attemptToken != null && attemptToken.Type == JTokenType.Integer
+                              && attemptToken.Value<int>() > 0
+                    ? attemptToken.Value<int>()
+                    : 1;
 
                 // Concurrency policy: a transaction belongs to the connection
                 // that opened it. Another client's mutation would otherwise join
@@ -123,16 +201,70 @@ namespace Kodaxa.RoboVision.Editor
                 else if (spec.Reads == ReadsNotified)
                     _reconciler.RefreshDirtyState();
 
-                var revisionToken = raw["if_revision"];
-                if (spec.Mutating && revisionToken != null && revisionToken.Type != JTokenType.Null)
+                // Is this delivery a duplicate? Asked after the authoritative
+                // read, so a replay reports the revision of the world as it is
+                // now, and before any checkpoint is taken, so a duplicate costs
+                // nothing.
+                //
+                // Only for tools that declared they resolve duplicates by
+                // replaying. A tool whose policy is terminal_state answers from
+                // its own state machine, and short-circuiting that here would
+                // make the declaration a lie: a second rollback would be handed
+                // the first one's stored result instead of being told the
+                // transaction is finished.
+                var replays = key != null && spec.DuplicatePolicy == DuplicateReplay;
+                if (replays)
                 {
-                    var expected = revisionToken.Value<long>();
-                    if (expected != Revision)
-                        throw new RoboVisionException(
-                            "STALE_REVISION",
-                            "scene revision changed",
-                            true,
-                            new JObject { ["expected"] = expected, ["actual"] = Revision });
+                    var replay = Invocations.Check(key, recipe, attempt, WorldIncarnation);
+                    if (replay != null)
+                    {
+                        var replayed = Envelope(requestId, watch, consistency);
+                        replayed["ok"] = true;
+                        foreach (var property in replay.Properties())
+                            replayed[property.Name] = property.Value;
+                        return replayed;
+                    }
+                }
+
+                // Checked for observation-bound operations too, and before the
+                // handler runs, so transaction.begin cannot take its checkpoint
+                // from a scene that moved after the caller planned against it.
+                if ((spec.Mutating || spec.ObservationBound) && ifRevision != null
+                    && ifRevision.Value != Revision)
+                {
+                    throw new RoboVisionException(
+                        "STALE_REVISION",
+                        "scene revision changed",
+                        true,
+                        new JObject { ["expected"] = ifRevision.Value, ["actual"] = Revision });
+                }
+
+                // Durable before the side effect, because a crash between
+                // changing Unity and recording that it changed is exactly the
+                // case one post-operation entry cannot describe.
+                if (spec.Mutating)
+                {
+                    intent = Ledger.WriteIntent(new JObject
+                    {
+                        ["request_id"] = requestId,
+                        ["idempotency_key"] = key,
+                        ["attempt"] = attempt,
+                        ["method"] = method,
+                        ["recipe_hash"] = recipe,
+                        ["params_hash"] = RoboVisionRecipe.Hash(
+                            method, parameters, HostVersion, spec.Determinism),
+                        ["seeds"] = seeds,
+                        ["determinism"] = spec.Determinism,
+                        ["frame"] = RoboVisionRecipe.CanonicalFrame,
+                        ["transaction"] = Transactions.ActiveId,
+                        ["state_domain"] = StateDomain,
+                        ["pre_revision"] = Revision,
+                        ["pre_fingerprint"] = checkpointRead != null ? checkpointRead.Fingerprint : null,
+                        ["tool_version"] = HostVersion
+                    });
+                    if (replays)
+                        Invocations.Reserve(key, recipe, WorldIncarnation,
+                            intent.Value<string>("transaction"), intent.Value<long>("sequence"));
                 }
 
                 if (spec.Mutating && !spec.TransactionControl)
@@ -154,16 +286,61 @@ namespace Kodaxa.RoboVision.Editor
                 response["ok"] = true;
                 response["result"] = result;
                 if (outcome != null) response["outcome"] = outcome;
+
+                if (intent != null)
+                {
+                    var postFingerprint = CurrentRead != null ? CurrentRead.Fingerprint : null;
+                    Ledger.WriteResult(intent.Value<long>("sequence"), new JObject
+                    {
+                        ["outcome"] = outcome ?? "completed",
+                        ["post_revision"] = Revision,
+                        ["post_fingerprint"] = postFingerprint,
+                        ["journal_cursor"] = Journal.Cursor(),
+                        ["response"] = new JObject
+                        {
+                            ["result"] = result != null ? result.DeepClone() : null,
+                            ["outcome"] = outcome
+                        }
+                    });
+                    if (replays)
+                    {
+                        Invocations.Complete(
+                            key,
+                            new JObject
+                            {
+                                ["result"] = result != null ? result.DeepClone() : null,
+                                ["outcome"] = outcome
+                            },
+                            new JObject
+                            {
+                                ["request_id"] = requestId,
+                                ["world_incarnation"] = WorldIncarnation,
+                                ["recipe_hash"] = recipe,
+                                ["pre_revision"] = intent["pre_revision"],
+                                ["pre_fingerprint"] = intent["pre_fingerprint"],
+                                ["post_revision"] = Revision,
+                                ["post_fingerprint"] = postFingerprint,
+                                ["outcome"] = outcome,
+                                ["transaction"] = intent["transaction"]
+                            });
+                    }
+                }
                 return response;
             }
             catch (RoboVisionException ex)
             {
                 var recoveryFailure = TryRecoverFailedOperation(checkpoint, checkpointRead, requestId, ex, out var recovery);
+                CloseFailed(intent, key, recoveryFailure ?? (Exception)ex, recovery);
                 return ErrorResponse(requestId, watch, recoveryFailure ?? ex, recovery, consistency);
             }
             catch (Exception ex)
             {
                 var recoveryFailure = TryRecoverFailedOperation(checkpoint, checkpointRead, requestId, ex, out var recovery);
+                // Closed before either return. Leaving early when recovery itself
+                // failed left the invocation reserved for the life of the bridge,
+                // and every later delivery of that key was answered IN_PROGRESS
+                // about an operation that had long since stopped running.
+                CloseFailed(intent, key, recoveryFailure ?? ex, recovery);
                 if (recoveryFailure != null)
                     return ErrorResponse(requestId, watch, recoveryFailure, recovery, consistency);
                 UnityEngine.Debug.LogException(ex);
@@ -179,97 +356,6 @@ namespace Kodaxa.RoboVision.Editor
                 response["error"] = error;
                 return response;
             }
-        }
-
-        private RoboVisionException TryRecoverFailedOperation(
-            RoboVisionUndo.OperationCheckpoint checkpoint,
-            SceneRead checkpointRead,
-            string requestId,
-            Exception original,
-            out JObject recovery)
-        {
-            recovery = null;
-            if (checkpoint == null) return null;
-            try
-            {
-                recovery = RoboVisionUndo.RecoverFailedMutation(checkpoint);
-                _reconciler.AcceptRecovered(checkpointRead);
-                return null;
-            }
-            catch (RoboVisionException recoveryError)
-            {
-                var data = recoveryError.Data is JObject objectData ? (JObject)objectData.DeepClone() : new JObject();
-                var originalData = new JObject
-                {
-                    ["type"] = original.GetType().Name,
-                    ["message"] = original.Message
-                };
-                if (original is RoboVisionException rvOriginal)
-                {
-                    originalData["code"] = rvOriginal.Code;
-                    if (rvOriginal.Data != null) originalData["data"] = rvOriginal.Data.DeepClone();
-                }
-                data["original_error"] = originalData;
-                // The mutation left something behind that could not be undone. That
-                // residue is ours, so it is reconciled and attributed to the request
-                // that caused it, rather than left for the next refresh to blame on
-                // a human edit.
-                _reconciler.Reconcile(RoboVisionReconciler.Agent, requestId, checkpointRead);
-                return new RoboVisionException(recoveryError.Code, recoveryError.Message, recoveryError.Retryable, data);
-            }
-        }
-
-        /// <summary>
-        /// The envelope, which is the same shape whether the call worked or not.
-        /// </summary>
-        /// <remarks>
-        /// PROTOCOL.md said every response carries `state_domain` and
-        /// `consistency`; measured, no error response on either host carried
-        /// either of them. A failure still happened in a state domain — the
-        /// editor was playing or it was not — and, once a method resolves, still
-        /// went through a tool with a declared consistency class. Before that
-        /// point there is no class to report, and `unknown` says so rather than
-        /// claiming the strongest one.
-        /// </remarks>
-        private JObject Envelope(string requestId, Stopwatch watch, string consistency)
-        {
-            watch.Stop();
-            return new JObject
-            {
-                ["rv"] = ProtocolVersion,
-                ["id"] = requestId ?? "invalid",
-                ["revision"] = Revision,
-                ["consistency"] = consistency ?? ReadsUnknown,
-                ["state_domain"] = StateDomain,
-                ["timing_ms"] = Math.Round(watch.Elapsed.TotalMilliseconds, 3)
-            };
-        }
-
-        private JObject ErrorResponse(string requestId, Stopwatch watch, RoboVisionException ex, JObject recovery,
-            string consistency)
-        {
-            var response = Envelope(requestId, watch, consistency);
-            var error = new JObject
-            {
-                ["code"] = ex.Code,
-                ["message"] = ex.Message,
-                ["retryable"] = ex.Retryable
-            };
-            if (recovery != null)
-            {
-                error["data"] = new JObject
-                {
-                    ["operation_error_data"] = ex.Data?.DeepClone(),
-                    ["automatic_recovery"] = recovery
-                };
-            }
-            else if (ex.Data != null)
-            {
-                error["data"] = ex.Data.DeepClone();
-            }
-            response["ok"] = false;
-            response["error"] = error;
-            return response;
         }
     }
 }

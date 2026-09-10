@@ -277,6 +277,11 @@ namespace Kodaxa.RoboVision.Editor
             // or rollback of it is told so.
             _transactions.AbandonForWorld("world_replaced");
             WorldIncarnation = MintWorld();
+            // Nothing was resumed into this one: it is a world this bridge is
+            // seeing for the first time. Leaving the flag set would let the
+            // durable operation records of a world that is gone be adopted into
+            // the one that replaced it.
+            _worldResumed = false;
             Journal.Rebind(WorldIncarnation, "load");
             Revision = 0;
             _world = current.World;

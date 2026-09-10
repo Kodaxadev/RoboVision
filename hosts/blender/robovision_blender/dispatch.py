@@ -17,7 +17,7 @@ from . import undo
 from .protocol import AUTHORED, HOST_VERSION, PROTOCOL_VERSION
 from .idempotency import PROVED_NOT_APPLIED
 from .recipe import CANONICAL_FRAME, coordinate_contract, recipe_hash, units
-from .registry import AUTHORITATIVE, EXACT, NOTIFIED, UNKNOWN, HostError
+from .registry import AUTHORITATIVE, EXACT, NOTIFIED, REPLAY, UNKNOWN, HostError
 
 # A transaction's own bookkeeping is not a scene mutation, so it does not go
 # through the accept path that decides `applied` versus `noop`.
@@ -287,7 +287,14 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
         # Is this delivery a duplicate? Asked after the authoritative read, so a
         # replay reports the revision of the world as it is now, and before any
         # checkpoint is taken, so a duplicate costs nothing.
-        if spec.mutating and key is not None:
+        #
+        # Only for tools that declared they resolve duplicates by replaying. A
+        # tool whose policy is `terminal_state` answers from its own state
+        # machine, and short-circuiting that here would make the declaration a
+        # lie: a second rollback carrying the same key would be handed the first
+        # one's stored result instead of being told the transaction is finished.
+        replays = key is not None and spec.duplicate_policy == REPLAY
+        if replays:
             replay = runtime.invocations.check(key, recipe, attempt, runtime.world_incarnation)
             if replay is not None:
                 return _envelope(runtime, request_id, started, consistency=consistency,
@@ -327,7 +334,7 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
                 pre_fingerprint=checkpoint["fingerprint"] if checkpoint else None,
                 tool_version=HOST_VERSION,
             )
-            if key is not None:
+            if replays:
                 runtime.invocations.reserve(
                     key, recipe, runtime.world_incarnation,
                     intent.get("transaction"), int(intent["sequence"]),
@@ -366,7 +373,7 @@ def dispatch_request(runtime, raw: dict[str, Any]) -> dict[str, Any]:
                 journal_cursor=runtime.journal.cursor(),
                 response={"result": result, "outcome": outcome},
             )
-            if key is not None:
+            if replays:
                 runtime.invocations.complete(
                     key,
                     {"result": result, "outcome": outcome},

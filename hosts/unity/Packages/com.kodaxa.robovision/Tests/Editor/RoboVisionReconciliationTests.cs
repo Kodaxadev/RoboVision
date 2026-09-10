@@ -63,11 +63,25 @@ namespace Kodaxa.RoboVision.Editor.Tests
                 if (reads != RoboVisionHost.ReadsAuthoritative) cheap[name] = reads;
             }
 
+            // A new tool defaults to authoritative — correct and slow rather than
+            // fast and wrong — so the only way into the cheap classes is to name
+            // it here as well as at its registration.
             var expected = new JObject
             {
+                // Reports the host's position; it must not be the thing that
+                // establishes it, and a client polls it in a loop.
                 ["scene.changes_since"] = RoboVisionHost.ReadsNotified,
+                // Report the revision and journal position without reporting
+                // scene state, so they cannot pair current geometry with a stale
+                // revision.
                 ["system.ping"] = RoboVisionHost.ReadsNotified,
                 ["system.hello"] = RoboVisionHost.ReadsNotified,
+                // Reports what became of a transaction, which is host state
+                // rather than scene state. Cheap on purpose: resolving a lost
+                // acknowledgement must not cost an authoritative read, and must
+                // never be the thing that changes what it is reporting on.
+                ["transaction.status"] = RoboVisionHost.ReadsNotified,
+                // Protocol metadata: the catalog does not depend on the scene.
                 ["system.capabilities"] = RoboVisionHost.ReadsIndependent,
                 ["system.method"] = RoboVisionHost.ReadsIndependent
             };

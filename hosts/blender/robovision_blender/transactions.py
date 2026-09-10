@@ -60,7 +60,14 @@ class Transaction:
 
 
 class TransactionManager:
-    def __init__(self) -> None:
+    def __init__(self, on_finished=None) -> None:
+        # Called with (transaction id, terminal state) when one ends. The
+        # operations recorded inside a transaction keep their tombstones and
+        # learn what became of it; discarding those records with the transaction
+        # would reopen the hole idempotency exists to close — operation executes,
+        # reply is lost, transaction rolls back, client retries, and with the key
+        # gone it executes again against a scene where the first one was undone.
+        self.on_finished = on_finished
         self.active: Transaction | None = None
         # What happened to transactions that ended. Remembering the id lets a
         # later commit or rollback say what actually happened instead of "no
@@ -108,6 +115,8 @@ class TransactionManager:
         while len(self.finished) > 32:
             self.finished.popitem(last=False)
         self.active = None
+        if self.on_finished is not None:
+            self.on_finished(tx.id, state)
 
     def state(self) -> dict[str, Any] | None:
         """What a client may know about the transaction, and nothing more.

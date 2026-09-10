@@ -281,7 +281,33 @@ METHOD_DOCS: dict[str, dict[str, Any]] = {
     "transaction.begin": _entry(
         "Begin a verified edit transaction and record its scene fingerprint.",
         ("transaction", "history", "safety"),
-        _object({"transaction": STRING, "label": STRING}),
+        _object({
+            "transaction": STRING,
+            "label": STRING,
+            # Documented because the precommitted path is the one a client should
+            # take, and a credential nobody knows how to send is a credential
+            # nobody sends.
+            "recovery_verifier": STRING,
+            "recovery_handle": STRING,
+        }),
+    ),
+    "transaction.adopt": _entry(
+        "Reclaim an orphaned transaction by proving you opened it.",
+        ("transaction", "recovery", "safety"),
+        _object(
+            {"transaction": STRING, "recovery_token": STRING, "next_recovery_verifier": STRING},
+            ("transaction", "recovery_token"),
+        ),
+    ),
+    "transaction.discard": _entry(
+        "Give up a transaction rather than claim an outcome for it.",
+        ("transaction", "recovery", "safety"),
+        _object({"transaction": STRING}, ("transaction",)),
+    ),
+    "transaction.status": _entry(
+        "Read what became of a transaction. Never repeats its side effect.",
+        ("transaction", "recovery", "read"),
+        _object({"transaction": STRING}),
     ),
     "transaction.commit": _entry(
         "Commit the active transaction, refusing contaminated state unless explicitly forced.",

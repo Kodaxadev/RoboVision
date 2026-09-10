@@ -7,7 +7,12 @@ preserved so existing references still resolve.
 
 ## 7. Idempotency, recipes and the operation ledger
 
-**Implemented in the Blender host; the Unity port is next.**
+**Implemented in both hosts.** The Unity port is behavioural rather than a
+translation: the same five identifiers, the same durable two-record ledger, the
+same determinism contract — and deliberately not the same frame. See
+[GATES_UNITY.md](GATES_UNITY.md) for the evidence, including the one case Unity
+can produce and Blender structurally cannot: a bridge destroyed and rebuilt by a
+domain reload while the editing world it was operating on survives.
 
 A lost reply must not become a second bevel. Measured on a host with no
 deduplication: a resent `object.create` produced two objects, a resent
@@ -160,6 +165,21 @@ incarnation nor the authored scene revision moves when they do — an agent
 pinning only those two would carry on measuring in a different currency without
 noticing. Scenes are not forced to `scale_length == 1`; the convention is
 identified, and an agent that cares says which one it planned against.
+
+The two hosts do **not** share a frame, and neither pretends to. Blender
+publishes `rvframe:blender_z_up_right_handed_metres`; Unity publishes
+`rvframe:unity_y_up_left_handed_metres` — Y up, +Z forward, left-handed. A
+request planned in one and delivered to the other is refused
+`COORDINATE_CONTRACT_CHANGED` rather than executed in a frame it never described,
+which is exactly the mistake a cross-editor agent is positioned to make. A
+conversion between them will be an explicit recipe with its own proof, not an
+assumption buried in an exporter.
+
+Unity also has no project-level unit scale: there is no equivalent of
+`scale_length` that a human can move between an observation and a mutation, so
+the Unity contract is stable within a project and says so rather than reporting a
+number it did not read. Per-asset import scale is an asset property and belongs
+to lineage work, not to the world's contract.
 
 The canonical frame means **one Blender unit is one RoboVision metre**,
 independent of what the unit display is set to. Blender's `scale_length` is what

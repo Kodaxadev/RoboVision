@@ -232,8 +232,116 @@ connection as authorization. The editor still does not stay wedged, because the
 owner holds a token and anyone may discard; what is gone is finishing someone
 else's edit without proving anything.
 
+### Invocation identity, and records that outlive the bridge
+
+Ported by behaviour rather than translated. The five identifiers are the same
+five — request id, idempotency key, attempt, recipe hash, seed channels — and
+none is derived from another. The frame deliberately is not the same:
+`rvframe:unity_y_up_left_handed_metres` against Blender's
+`rvframe:blender_z_up_right_handed_metres`. Pretending the two hosts share a
+frame would make every cross-editor claim quietly wrong, so each publishes its
+own and a request pinning the other one is refused
+`COORDINATE_CONTRACT_CHANGED` rather than executed here.
+
+Unity has no project-level unit scale — no equivalent of Blender's
+`scale_length` that a human can move between an agent's observation and its
+mutation — so the contract is stable within a project. It is still pinned and
+still checked, because what it catches across two editors is larger than what it
+catches within one.
+
+`RoboVisionIdempotencyTests.cs` covers the delivery model: a redelivered
+mutation replays instead of authoring a second object; the replay reports the
+original execution separately from the envelope, so a client can never conclude
+the operation ran at the revision its retry happened to arrive at; the same key
+for a different computation is `IDEMPOTENCY_MISMATCH`; a retry of a key this host
+never saw is `INDETERMINATE` rather than executed; a failure whose automatic
+recovery proved the pre-operation fingerprint was restored leaves the key
+eligible to run again; a stochastic tool refuses to invent its own randomness and
+names the channel it needs; a registry that would accept seeds on an exact tool,
+a seeded tool with no channels, a side-effecting tool with no duplicate policy,
+or a duplicate policy on something with no side effect, refuses all four; and the
+operation ledger records the intent before the outcome and never contains a
+recovery secret.
+
+**The evidence unique to this phase** is in `RoboVisionLedgerReloadTests.cs`. A
+domain reload destroys every static in the package while the editing world stays
+exactly where it was — the case the durable records exist for, and one Blender
+cannot produce. The bridge id rotates, the world incarnation does not, the
+resumed bridge opens the same ledger file, and a redelivery of a key the previous
+bridge reserved is replayed rather than applied a second time.
+
+The direction of that argument is asserted, not assumed. World continuity is
+established by reading the editor back and matching it exactly; only then may the
+ledger be adopted. `TheLedgerIsNotEvidenceThatTheWorldIsTheSame` discards the
+stashed world memory and changes nothing else: the scene is untouched and the
+records are still on disk, and the rebuilt bridge mints a new world, opens a new
+ledger and answers a retry `INDETERMINATE`. A replaced world does the same. A
+ledger that could authorise replaying its own contents would be circular, and
+this is where that is either true or it is not.
+
+### Acknowledgement loss
+
+`tools/unity-ack-loss.sh` covers the window every recovery guarantee is actually
+about: the host has applied a request and its response never reaches the caller.
+Reaching that state by editing private state afterwards would assert the edit
+rather than the behaviour, so the transport has two deliberate seams — drop a
+response after the handler ran, or drop a request before it does. The tool that
+arms them lives in the package's *test* assembly, which a consuming project never
+compiles: a shipped editor has no way to make the host stop answering.
+
+The driver is the public Python `HostSession`, unchanged — the same object the
+MCP adapter holds. That is the point of running it here rather than writing a C#
+equivalent: the public client is meant to be host-agnostic, and this is where
+that claim is tested against Unity. Seven windows:
+
+| window | question | result |
+| --- | --- | --- |
+| begin, applied | does the credential survive and still find its transaction? | `SESSION_LOST`, credential held before the request went out, orphan found by its handle, adopted |
+| begin, never applied | is the client honest that there is nothing to reclaim? | credential kept, `recoverable_transaction()` is `None`, the host opened nothing |
+| adopt, applied | does the client know its replacement is current? | host generation 1, replacement promoted, re-adoption succeeds |
+| adopt, never applied | does the client know its original is still current? | host generation 0, nothing promoted, the original still proves ownership |
+| commit | is the outcome read rather than re-applied? | `committed`, with begin and final fingerprints, object count unchanged, credential released |
+| discard | the same, where the proof is a reason | `abandoned`, with its reason, object count unchanged, credential released |
+| mutation | does the same key replay instead of authoring twice? | applied by the host, `replayed` on redelivery, no second object |
+
+Rollback is deliberately not among them, for the same reason it is not on the
+Blender side: what a lost rollback reply would have to prove is a restoration,
+and that claim belongs to the tests that actually verify one.
+
+The credential itself is precommitted. The client generates a 32-byte secret and
+sends only its SHA-256 verifier, with no salt — a salt would make the verifier
+uncomputable by the client, which is exactly what precommitment needs. A
+non-secret correlation handle is persisted before the request goes out, and the
+recovery generation is counted so an ambiguous adoption becomes a deterministic
+lookup rather than a guess. Nothing here authenticates: only the secret does.
+
+### Autonomous invocation
+
+`RoboVisionAutonomousTests.cs`. Low-level delivery stays permissive, so an
+operator at a console can still poke the host. Under `contract: "autonomous"` a
+mutation must supply `expected_world`, `expected_coordinate_contract`,
+`if_revision`, `idempotency_key` and `attempt`, and is refused
+`CONTRACT_VIOLATION` naming exactly what is missing. An observation-bound call
+that never mutates — `transaction.begin` — must supply the first three and is not
+asked for the last two, because only a mutation can be applied twice.
+
+Observation binding is a property of the tool rather than a privilege of the
+autonomous path: `transaction.begin` against a revision that has already moved is
+refused `STALE_REVISION` with no contract declared at all. A checkpoint taken
+from a scene the caller never planned against is a rollback target nobody chose.
+
 ### Defects this gate found
 
+- **a cross-host defect the port exposed.** Blender's invocation ledger had a
+  `note_transaction_outcome` nothing ever called, and the Blender gate that
+  asserted the tombstone wrote the outcome by hand first — so it proved its own
+  edit rather than the host's behaviour, and a real client's retry after a
+  transaction ended would have been answered with no outcome at all. Writing the
+  Unity equivalent is what surfaced it. Both hosts now report a terminal
+  transaction to the ledger, and both gates assert what the host recorded.
+- `transaction.status` arrived as a non-authoritative tool and the read-consistency
+  audit refused the suite until it was reviewed in — the audit working as designed,
+  on both hosts
 - a request with no `id` was accepted, because the id was defaulted before the
   emptiness check ran
 - `if_revision` was validated against a possibly stale revision, and an
@@ -295,6 +403,12 @@ stayed monotonic, and no transaction was left active. Mean cycle 13.65ms, p50
 - **Repeat volume at the suite level.** The EditMode suite runs three
   consecutive times; the soak covers 200 cycles but exercises one cycle shape
   rather than the whole suite.
+- **Ledger retention.** Every world incarnation gets its own append-only file
+  under `Library/RoboVision/ledger`, and nothing prunes them: a long editing
+  session accumulates one small file per editing context entered. That is
+  deliberate for now — the ledger is the smallest durable spine idempotency and
+  the artist loop's experiment trace can share, and a retention policy is a
+  decision to make once something needs it, not a default to guess at.
 
 ### Runtime floor
 
@@ -303,23 +417,28 @@ path was `C:\Program Files\Unity\Hub\Editor` on a drive with 0.6 GB free
 against a ~19 GB editor. That is resolved. The Hub's install path is
 `D:\Unity Hub\Editor` and its download location `D:\TEMP`, both verified
 before anything was run, and 6000.0.83f1 — the version the compile gate uses —
-is installed there.
+is installed there. The development editor is still on the original C: path, so
+the harnesses take the binary explicitly rather than assuming one root.
 
 The floor is therefore executed rather than inferred, and the counts are kept
 apart from the 6000.6 ones rather than merged into a single number:
 
 | editor | gate | result |
 | --- | --- | --- |
-| 6000.0.83f1 (declared floor) | EditMode suite | 118 tests, 114 passed, 0 failed, 4 SceneView skips |
+| 6000.0.83f1 (declared floor) | EditMode suite | 147 tests, 143 passed, 0 failed, 4 SceneView skips |
+| 6000.0.83f1 (declared floor) | acknowledgement loss | 7/7 windows, `result: ok` |
 | 6000.0.83f1 (declared floor) | restart + package re-resolution | 15/15 checks, all three phases on 6000.0.83f1 |
-| 6000.6.0f1 (development) | EditMode suite | 118 tests, 114 passed, 0 failed, 4 SceneView skips |
-| 6000.6.0f1 (development) | restart + package re-resolution | 15/15 checks |
+| 6000.6.0f1 (development) | EditMode suite | 147 tests, 143 passed, 0 failed, 4 SceneView skips |
+| 6000.6.0f1 (development) | acknowledgement loss | 7/7 windows, `result: ok` |
+| 6000.6.0f1 (development) | restart + package re-resolution | 15/15 checks, all three phases on 6000.6.0f1 |
 | 6000.0.83 (CI) | compile only | `ROBOVISION_UNITY_COMPILE_PASS` |
 
-At the world/identity checkpoint the suite was 112/108/0/4 on both editors and
-the restart gate 11/11. The counts above are the current ones: the suite grew by
-the transaction lifecycle and envelope tests, and the restart gate by the four
-checks that a transaction does not survive a process death.
+Each editor gets its own generated project and its own artifact directory, so
+neither run's numbers can be read as the other's. At the world/identity
+checkpoint the suite was 112/108/0/4 and the restart gate 11/11; at the
+transaction checkpoint 118/114/0/4. The counts above are the current ones — the
+suite grew by the idempotency, ledger-reload and autonomous-contract fixtures,
+and by the commit-after-reload and four-transition proofs.
 
 Both editors were confirmed from the run's own log — `Initialize engine version:
 6000.0.83f1` — rather than from the path it was launched by. Compile coverage

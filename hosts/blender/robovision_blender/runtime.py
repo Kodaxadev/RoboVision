@@ -26,7 +26,7 @@ __all__ = ["HOST_VERSION", "PROTOCOL_VERSION", "RUNTIME", "RoboVisionRuntime"]
 class RoboVisionRuntime:
     def __init__(self) -> None:
         self.registry = ToolRegistry()
-        self.transactions = TransactionManager()
+        self.transactions = TransactionManager(on_finished=self._transaction_finished)
         self.transport: NonBlockingJsonServer | None = None
         self.revision = 0
         self._dirty = True
@@ -159,6 +159,15 @@ class RoboVisionRuntime:
         self._last_snapshot = None
         self.journal.rebind(self.world_incarnation, reason="load")
         self.reconcile(source=EDITOR)
+
+    def _transaction_finished(self, transaction: str, state: str) -> None:
+        """A transaction ended; the invocations inside it record what became of it.
+
+        Read through `self.invocations` rather than captured, because a world
+        change rebinds it and a callback holding the previous ledger would write
+        tombstones into a record nobody will ever consult.
+        """
+        self.invocations.note_transaction_outcome(transaction, state)
 
     def _rebind_operation_records(self) -> None:
         """Follow the world into its new incarnation.

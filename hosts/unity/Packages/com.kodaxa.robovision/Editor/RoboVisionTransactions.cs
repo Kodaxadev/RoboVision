@@ -35,24 +35,6 @@ namespace Kodaxa.RoboVision.Editor
         internal const string StateRolledBack = "rolled_back";
         internal const string StateRecoveryUncertain = "recovery_uncertain";
 
-        private sealed class Transaction
-        {
-            public string Id;
-            /// <summary>The client's correlation string. Never identity.</summary>
-            public string Label;
-            public string World;
-            public long BeginRevision;
-            public string BeginFingerprint;
-            public int UndoGroup;
-            /// <summary>The checkpoint names objects that only this domain can address.</summary>
-            public bool SessionScoped;
-            public string ExternalChangeFingerprint;
-            public long OwnerClientId;
-            public string State = StateActive;
-            public string Reason;
-            public RoboVisionRecoveryToken Recovery;
-        }
-
         private readonly RoboVisionHost _host;
         private Transaction _current;
         /// <summary>Whether an interrupted transaction has been judged; see EnsureJudged.</summary>
@@ -83,35 +65,6 @@ namespace Kodaxa.RoboVision.Editor
         public long ActiveOwner => _current != null ? _current.OwnerClientId : -1;
         public bool ActiveOwnerDisconnected => _current != null && _current.State == StateOrphaned;
         public string ActiveId => Active ? _current.Id : null;
-
-        /// <summary>Everything a client may know about the transaction, and nothing more.</summary>
-        /// <remarks>
-        /// Deliberately without the recovery token or its verifier. This is what
-        /// <c>system.hello</c> reports and what health will consume later, so it
-        /// says who holds the transaction and whether a verified rollback is
-        /// available — it never grants the authority to use one.
-        /// </remarks>
-        public JObject ActiveState()
-        {
-            EnsureJudged();
-            if (_current == null) return null;
-            var state = new JObject
-            {
-                ["transaction"] = _current.Id,
-                ["label"] = _current.Label,
-                ["state"] = _current.State,
-                ["world_incarnation"] = _current.World,
-                ["owner_client"] = _current.OwnerClientId,
-                ["owner_disconnected"] = _current.State == StateOrphaned,
-                ["begin_revision"] = _current.BeginRevision,
-                ["begin_fingerprint"] = _current.BeginFingerprint,
-                ["contaminated"] = _current.ExternalChangeFingerprint != null,
-                ["adoption_required"] = _current.State == StateOrphaned,
-                ["verified_rollback_available"] = _current.State != StateRecoveryUncertain
-            };
-            if (_current.Reason != null) state["reason"] = _current.Reason;
-            return state;
-        }
 
         // ------------------------------------------------------------ lifecycle
 
@@ -144,28 +97,6 @@ namespace Kodaxa.RoboVision.Editor
             }
         }
 
-        private void Finish(string state, string reason)
-        {
-            if (_current == null) return;
-            Remember(_current.Id, state, _current.World, reason);
-            _current = null;
-            TransactionMemory.Forget();
-        }
-
-        private void Remember(string id, string state, string world, string reason)
-        {
-            var record = new JObject
-            {
-                ["transaction"] = id,
-                ["state"] = state,
-                ["world_incarnation"] = world
-            };
-            if (reason != null) record["reason"] = reason;
-            _finished[id] = record;
-            _finishedOrder.Enqueue(id);
-            while (_finishedOrder.Count > 32) _finished.Remove(_finishedOrder.Dequeue());
-        }
-
         // -------------------------------------------------------------- begin
 
         public JToken Begin(JObject parameters, long ownerClientId)
@@ -178,7 +109,16 @@ namespace Kodaxa.RoboVision.Editor
             var read = _host.CurrentRead;
             var world = _host.WorldIncarnation;
             var label = parameters.Value<string>("label") ?? "agent edit";
-            var recovery = RoboVisionRecoveryToken.Mint(out var secret);
+            // Precommitted where the client supplied a verifier: it already holds
+            // the secret, so a lost reply cannot strand the transaction. Minted
+            // only as a fallback, and the response says which happened rather
+            // than letting the weaker path look like the safe one.
+            string secret = null;
+            var offeredVerifier = parameters.Value<string>("recovery_verifier");
+            var recovery = String.IsNullOrEmpty(offeredVerifier)
+                ? RoboVisionRecoveryToken.Mint(out secret)
+                : RoboVisionRecoveryToken.Precommit(offeredVerifier);
+            var handle = parameters.Value<string>("recovery_handle");
 
             _current = new Transaction
             {
@@ -194,27 +134,26 @@ namespace Kodaxa.RoboVision.Editor
                 UndoGroup = RoboVisionUndo.OpenGroup(label),
                 SessionScoped = HasSessionScopedIds(read),
                 OwnerClientId = ownerClientId,
-                Recovery = recovery
+                Recovery = recovery,
+                Handle = String.IsNullOrEmpty(handle) ? null : handle
             };
             Persist();
 
-            return new JObject
+            var response = ActiveState();
+            response["undo_group"] = _current.UndoGroup;
+            response["recovery_precommitted"] = recovery.Precommitted;
+            if (secret != null)
             {
-                ["transaction"] = _current.Id,
-                ["label"] = label,
-                ["state"] = _current.State,
-                ["world_incarnation"] = world,
-                ["begin_revision"] = _current.BeginRevision,
-                ["begin_fingerprint"] = _current.BeginFingerprint,
-                ["undo_group"] = _current.UndoGroup,
-                ["owner_client"] = ownerClientId,
-                ["contaminated"] = false,
-                // Returned exactly once. There is no call that gives it back.
-                ["recovery_token"] = secret,
-                ["recovery_token_note"] =
+                // Returned exactly once, and only because the caller did not
+                // precommit. If this reply is lost the transaction cannot be
+                // reclaimed, which is why precommitting is the documented path.
+                response["recovery_token"] = secret;
+                response["recovery_token_note"] =
                     "Store this. It is the only way to reclaim this transaction after a disconnect "
-                    + "or a domain reload, and the host keeps only a hash of it."
-            };
+                    + "or a domain reload, and the host keeps only a hash of it. Prefer sending "
+                    + "recovery_verifier at begin so a lost reply cannot strand the transaction.";
+            }
+            return response;
         }
 
         private static string Tail(string incarnation)
@@ -246,7 +185,15 @@ namespace Kodaxa.RoboVision.Editor
             var contaminated = tx.ExternalChangeFingerprint != null;
             var id = tx.Id;
             var begin = tx.BeginFingerprint;
-            Finish(StateCommitted, null);
+            // Terminal state instead of a replayed result is fine, but only if
+            // the terminal answer still carries what made it meaningful. A caller
+            // whose commit reply was lost needs the proof, not just the word.
+            Finish(StateCommitted, null, new JObject
+            {
+                ["begin_fingerprint"] = begin,
+                ["final_fingerprint"] = finalFingerprint,
+                ["forced_after_external_change"] = contaminated
+            });
             return new JObject
             {
                 ["transaction"] = id,
@@ -275,7 +222,12 @@ namespace Kodaxa.RoboVision.Editor
                     });
             var contaminated = tx.ExternalChangeFingerprint != null;
             var id = tx.Id;
-            Finish(StateRolledBack, null);
+            Finish(StateRolledBack, null, new JObject
+            {
+                ["begin_fingerprint"] = tx.BeginFingerprint,
+                ["restored_fingerprint"] = actual,
+                ["forced_after_external_change"] = contaminated
+            });
             return new JObject
             {
                 ["transaction"] = id,
@@ -356,16 +308,5 @@ namespace Kodaxa.RoboVision.Editor
                 new JObject { ["transaction"] = tx.Id, ["your_client"] = clientId });
         }
 
-        /// <summary>A transaction that ended is told what ended it.</summary>
-        private RoboVisionException Stale(string id)
-        {
-            if (id == null || !_finished.TryGetValue(id, out var record)) return null;
-            var state = record.Value<string>("state");
-            var code = state == StateAbandoned ? "TRANSACTION_ABANDONED" : "TRANSACTION_FINISHED";
-            return new RoboVisionException(code,
-                "that transaction is no longer open: " + state
-                + (record["reason"] != null ? " (" + record.Value<string>("reason") + ")" : ""),
-                false, (JObject)record.DeepClone());
-        }
     }
 }

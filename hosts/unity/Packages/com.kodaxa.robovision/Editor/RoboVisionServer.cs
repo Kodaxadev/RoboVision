@@ -23,6 +23,9 @@ namespace Kodaxa.RoboVision.Editor
         }
 
         private readonly List<ClientState> _clients = new List<ClientState>();
+        // Set by a fault seam so the close path can skip flushing a response the
+        // test has just decided the caller never sees.
+        private bool _dropped;
         private Socket _listener;
         // Requests carry the connection they arrived on so the host can apply a
         // concurrency policy instead of treating every client as the same caller.
@@ -32,6 +35,26 @@ namespace Kodaxa.RoboVision.Editor
 
         public int Port { get; }
         public bool Running => _listener != null;
+
+        /// <summary>A test seam for the one window that cannot otherwise be reached.</summary>
+        /// <remarks>
+        /// After the host has applied a request and before its response is
+        /// delivered. Every acknowledgement-loss guarantee is about exactly that
+        /// gap, and a test that reached it by editing private state afterwards
+        /// would be asserting its own edit rather than the host's behaviour.
+        /// Called with the request and the response; returning false drops the
+        /// response and closes the connection. Always null in a shipped host —
+        /// nothing in the Editor assembly ever sets it.
+        /// </remarks>
+        internal Func<JObject, JObject, bool> FaultAfterDispatch { get; set; }
+
+        /// <summary>The other half of the same seam: a request that never arrived.</summary>
+        /// <remarks>
+        /// Telling "applied but unacknowledged" apart from "never applied" is
+        /// exactly what the credential generation counter exists for, so both
+        /// sides of that distinction have to be reachable deterministically.
+        /// </remarks>
+        internal Func<JObject, bool> FaultBeforeDispatch { get; set; }
 
         public RoboVisionServer(int port, Func<JObject, long, JObject> dispatch, Action<long> onClientClosed = null)
         {
@@ -60,6 +83,9 @@ namespace Kodaxa.RoboVision.Editor
                 var client = _clients[i];
                 if (!ReadClient(client, ref remaining))
                 {
+                    // A dropped response is discarded rather than delivered on
+                    // the way out; the socket dies with whatever it was holding.
+                    if (_dropped) { client.Outbound.Clear(); _dropped = false; }
                     CloseClient(i);
                     continue;
                 }
@@ -121,7 +147,19 @@ namespace Kodaxa.RoboVision.Editor
                 {
                     var text = Encoding.UTF8.GetString(raw);
                     var request = JObject.Parse(text);
+                    if (FaultBeforeDispatch != null && !FaultBeforeDispatch(request))
+                    {
+                        // Never reached the host.
+                        _dropped = true;
+                        return false;
+                    }
                     response = _dispatch(request, client.Id);
+                    if (FaultAfterDispatch != null && !FaultAfterDispatch(request, response))
+                    {
+                        // Applied by the host, never seen by the caller.
+                        _dropped = true;
+                        return false;
+                    }
                 }
                 catch (Exception ex) when (ex is JsonException || ex is DecoderFallbackException)
                 {

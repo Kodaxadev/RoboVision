@@ -189,6 +189,64 @@ namespace Kodaxa.RoboVision.Editor.Tests
         }
 
         /// <summary>
+        /// The other outcome an adopted transaction has to be able to reach.
+        /// </summary>
+        /// <remarks>
+        /// A rollback proves the checkpoint can be reproduced. A commit proves
+        /// the opposite direction: that the work done before the interruption is
+        /// kept, and that the finished record still carries the evidence which
+        /// made the outcome meaningful. Asserting only the rollback would leave
+        /// the more common ending untested.
+        /// </remarks>
+        [UnityTest]
+        public IEnumerator ADomainReloadLeavesASavedTransactionCommittable()
+        {
+            _rv.CreateObject("Kept");
+            EditorSceneManager.SaveScene(SceneManager.GetActiveScene(), ScenePath);
+            _rv.Result("scene.describe");
+
+            var begun = Begin("committed across a reload");
+            SessionState.SetString(IdKey, begun.Value<string>("transaction"));
+            SessionState.SetString(TokenKey, begun.Value<string>("recovery_token"));
+            SessionState.SetString(PrintKey, begun.Value<string>("begin_fingerprint"));
+            _rv.CreateObject("AlsoKept");
+
+            yield return new EnterPlayMode();
+            yield return new ExitPlayMode();
+
+            var id = SessionState.GetString(IdKey, null);
+            var token = SessionState.GetString(TokenKey, null);
+            var beginFingerprint = SessionState.GetString(PrintKey, null);
+            var after = new Harness("txlife-commit");
+
+            after.Result("transaction.adopt", new JObject
+            {
+                ["transaction"] = id,
+                ["recovery_token"] = token
+            });
+            var committed = after.Result("transaction.commit", new JObject { ["transaction"] = id });
+            Assert.That(committed.Value<bool>("committed"), Is.True);
+            Assert.That(committed.Value<string>("begin_fingerprint"), Is.EqualTo(beginFingerprint));
+            Assert.That(committed.Value<string>("final_fingerprint"),
+                Is.Not.EqualTo(beginFingerprint), "a commit that kept nothing");
+
+            Assert.That(after.Result("scene.describe")["scenes"].SelectMany(s => s["objects"])
+                    .Select(o => o.Value<string>("name")),
+                Is.EquivalentTo(new[] { "Kept", "AlsoKept" }),
+                "the interrupted transaction's work was not kept by its commit");
+
+            // And the outcome is readable afterwards, with the proof intact — the
+            // path a caller whose acknowledgement was lost actually takes.
+            var status = after.Result("transaction.status", new JObject { ["transaction"] = id });
+            var finished = (JObject)status["finished"];
+            Assert.That(finished.Value<string>("state"),
+                Is.EqualTo(RoboVisionTransactions.StateCommitted));
+            Assert.That(finished.Value<string>("begin_fingerprint"), Is.EqualTo(beginFingerprint));
+            Assert.That(finished.Value<string>("final_fingerprint"),
+                Is.EqualTo(committed.Value<string>("final_fingerprint")));
+        }
+
+        /// <summary>
         /// In an unsaved scene the checkpoint cannot be reproduced, and the host says so.
         /// </summary>
         /// <remarks>

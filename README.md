@@ -23,7 +23,7 @@ robovision/                 # editor-agnostic Python protocol + client
 hosts/blender/              # Blender add-on
 hosts/unity/                # Unity Editor package
 docs/                       # architecture, protocol, gates and host contract
-tests/                      # host-independent tests
+tests/                      # host-independent tests, plus the gates that drive a real editor
 ```
 
 ## Current target

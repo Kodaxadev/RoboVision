@@ -48,13 +48,31 @@ namespace Kodaxa.RoboVision.Editor
             _current.OwnerClientId = clientId;
             _current.State = StateActive;
             _current.Reason = null;
-            _current.Recovery = RoboVisionRecoveryToken.Mint(out var rotated);
+            // Rotation is what stops a leaked secret being a permanent key, and
+            // it is also where a lost reply does the most damage: the old secret
+            // is dead the moment this returns. A client that supplies the
+            // verifier for its next secret already holds the replacement, so
+            // losing this reply costs it nothing.
+            string rotated = null;
+            var nextVerifier = parameters.Value<string>("next_recovery_verifier");
+            _current.Recovery = String.IsNullOrEmpty(nextVerifier)
+                ? RoboVisionRecoveryToken.Mint(out rotated)
+                : RoboVisionRecoveryToken.Precommit(nextVerifier);
+            // Counted after the swap, so the number a client reads back is the
+            // generation of the credential that is now current.
+            _current.RecoveryGeneration++;
             Persist();
 
             var state = ActiveState();
             state["adopted"] = true;
-            state["recovery_token"] = rotated;
-            state["recovery_token_note"] = "Rotated by this adoption; the previous token no longer works.";
+            state["recovery_precommitted"] = _current.Recovery.Precommitted;
+            if (rotated != null)
+            {
+                state["recovery_token"] = rotated;
+                state["recovery_token_note"] =
+                    "Rotated by this adoption; the previous token no longer works. Send "
+                    + "next_recovery_verifier with adopt so a lost reply cannot strand the transaction.";
+            }
             return state;
         }
 
@@ -112,8 +130,10 @@ namespace Kodaxa.RoboVision.Editor
                 ["undo_group"] = _current.UndoGroup,
                 ["session_scoped"] = _current.SessionScoped,
                 ["external_change"] = _current.ExternalChangeFingerprint,
-                ["salt"] = _current.Recovery != null ? _current.Recovery.Salt : null,
-                ["verifier"] = _current.Recovery != null ? _current.Recovery.Verifier : null
+                ["handle"] = _current.Handle,
+                ["recovery_generation"] = _current.RecoveryGeneration,
+                ["verifier"] = _current.Recovery != null ? _current.Recovery.Verifier : null,
+                ["precommitted"] = _current.Recovery != null && _current.Recovery.Precommitted
             });
         }
 
@@ -189,8 +209,10 @@ namespace Kodaxa.RoboVision.Editor
                 OwnerClientId = -1,
                 State = sessionScoped ? StateRecoveryUncertain : StateOrphaned,
                 Reason = sessionScoped ? "checkpoint_identities_lost" : "bridge_reloaded",
+                Handle = stashed.Value<string>("handle"),
+                RecoveryGeneration = stashed.Value<int>("recovery_generation"),
                 Recovery = RoboVisionRecoveryToken.FromStored(
-                    stashed.Value<string>("salt"), stashed.Value<string>("verifier"))
+                    stashed.Value<string>("verifier"), stashed.Value<bool>("precommitted"))
             };
         }
     }

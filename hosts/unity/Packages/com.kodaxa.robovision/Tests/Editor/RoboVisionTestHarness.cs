@@ -35,7 +35,8 @@ namespace Kodaxa.RoboVision.Editor.Tests
             long? ifRevision = null,
             bool ok = true,
             string code = null,
-            bool allowEither = false)
+            bool allowEither = false,
+            JObject envelope = null)
         {
             _serial++;
             var request = new JObject
@@ -46,6 +47,12 @@ namespace Kodaxa.RoboVision.Editor.Tests
                 ["params"] = parameters ?? new JObject()
             };
             if (ifRevision.HasValue) request["if_revision"] = ifRevision.Value;
+            // Delivery identity lives beside the request, never inside its
+            // parameters: an idempotency key that were a parameter would change
+            // the recipe hash and make every retry a different computation.
+            if (envelope != null)
+                foreach (var property in envelope.Properties())
+                    request[property.Name] = property.Value.DeepClone();
 
             var response = Host.Dispatch(request);
             var actualOk = response.Value<bool>("ok");
@@ -97,6 +104,14 @@ namespace Kodaxa.RoboVision.Editor.Tests
             return id;
         }
 
+        /// <summary>Begin, keeping the whole response — the recovery token comes back once.</summary>
+        internal JObject BeginTransactionRaw(JObject parameters)
+        {
+            var result = Result("transaction.begin", parameters);
+            ActiveTransaction = result.Value<string>("transaction");
+            return result;
+        }
+
         internal JObject EndTransaction(string method, string id, bool force = false)
         {
             var parameters = new JObject { ["transaction"] = id };
@@ -105,6 +120,9 @@ namespace Kodaxa.RoboVision.Editor.Tests
             ActiveTransaction = null;
             return result;
         }
+
+        /// <summary>A test ended the transaction itself; stop tracking it for teardown.</summary>
+        internal void ActiveTransactionEnded() => ActiveTransaction = null;
 
         /// <summary>
         /// Abandon a transaction a failing test left open, through the real API.

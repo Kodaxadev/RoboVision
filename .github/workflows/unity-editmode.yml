@@ -12,12 +12,16 @@ on:
   push:
     paths:
       - "hosts/unity/**"
+      - "tests/unity/**"
       - "tools/unity-testbed.sh"
+      - "tools/unity-ack-loss.sh"
       - ".github/workflows/unity-editmode.yml"
   pull_request:
     paths:
       - "hosts/unity/**"
+      - "tests/unity/**"
       - "tools/unity-testbed.sh"
+      - "tools/unity-ack-loss.sh"
       - ".github/workflows/unity-editmode.yml"
   workflow_dispatch:
 

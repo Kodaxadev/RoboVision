@@ -22,7 +22,7 @@ import bpy  # noqa: E402
 from _harness import Host, artifact_dir, clean_scene, expect, run_gate  # noqa: E402
 from robovision_blender.idempotency import IdempotencyLedger  # noqa: E402
 from robovision_blender.ledger import OperationLedger  # noqa: E402
-from robovision_blender.registry import EXACT, SEEDED, HostError  # noqa: E402
+from robovision_blender.registry import EXACT, SEEDED, TERMINAL_STATE, HostError  # noqa: E402
 
 SEEN: dict[str, object] = {}
 
@@ -197,11 +197,14 @@ def a_rolled_back_operation_is_not_resurrected_by_a_retry(rv: Host) -> None:
     tx = rv.result("transaction.begin", {"label": "rolled back"})["transaction"]
     send(rv, "object.create", {"kind": "cube", "name": "Undone"}, key="k-in-tx")
     rv.result("transaction.discard", {"transaction": tx})
-    rv.runtime.invocations.note_transaction_outcome(tx, "abandoned")
 
     again = send(rv, "object.create", {"kind": "cube", "name": "Undone"}, key="k-in-tx", attempt=2)
     expect(again.get("replayed") is True,
            f"a retry after the transaction ended executed as new work: {again}")
+    # Recorded by the host when the transaction ended, not by this test. It used
+    # to be written here by hand, which meant the assertion below proved the
+    # test's own edit: the manager never told the invocation ledger anything, and
+    # a real client's retry would have been answered with no outcome at all.
     expect(again.get("original_execution", {}).get("transaction_outcome") == "abandoned",
            f"the replay did not say what became of the transaction: {again}")
 
@@ -243,6 +246,49 @@ def a_stochastic_tool_refuses_to_invent_its_own_randomness(rv: Host) -> None:
     changed = send(rv, "test.scatter", {"seed": 8}, key="k-seeded", attempt=2)
     expect(code(changed) == "IDEMPOTENCY_MISMATCH",
            f"the same key with a different seed was accepted: {changed}")
+
+
+def a_declared_duplicate_policy_is_what_actually_happens(rv: Host) -> None:
+    """`terminal_state` must not be quietly answered by replay.
+
+    The invocation ledger used to intercept any keyed redelivery of a mutating
+    tool and hand back the first execution's stored result — never reaching the
+    state machine that was supposed to answer. The declaration was decoration.
+    Dispatch now consults the ledger only for tools that said they resolve
+    duplicates by replaying.
+
+    Exercised through a test-only tool rather than `transaction.rollback`, the
+    one shipped verb this distinguishes: background Blender cannot perform a
+    verified rollback at all, so the assertion would be about undo rather than
+    about the policy. The Unity gate asserts it on the real verb.
+    """
+    clean_scene()
+    rv.result("scene.snapshot")
+
+    def once(params, runtime):
+        existing = bpy.data.objects.get("PolicyOnly")
+        if existing is not None:
+            # The tool's own state machine, which is exactly what a
+            # `terminal_state` policy promises answers a redelivery.
+            return {"already_done": True}
+        bpy.ops.mesh.primitive_cube_add()
+        bpy.context.active_object.name = "PolicyOnly"
+        return {"already_done": False}
+
+    if "test.once" not in [tool["name"] for tool in rv.runtime.registry.capabilities()]:
+        rv.runtime.registry.add("test.once", once, mutating=True,
+                                duplicate_policy=TERMINAL_STATE,
+                                summary="Test-only: answers a redelivery from its own state.")
+
+    first = send(rv, "test.once", {}, key="k-policy")
+    expect(first["ok"] and first["result"]["already_done"] is False, f"the first call: {first}")
+    again = send(rv, "test.once", {}, key="k-policy", attempt=2)
+    expect(again.get("replayed") is not True,
+           f"a terminal_state tool was answered by replay: {again}")
+    expect(again["result"]["already_done"] is True,
+           f"the redelivery did not reach the tool's own state machine: {again}")
+    expect(names().count("PolicyOnly") == 1,
+           f"the redelivery applied a second time: {names()}")
 
 
 def determinism_metadata_cannot_be_omitted(rv: Host) -> None:
@@ -482,6 +528,7 @@ SCENARIOS = (
     a_replaced_world_cannot_be_retried_into,
     a_rolled_back_operation_is_not_resurrected_by_a_retry,
     a_stochastic_tool_refuses_to_invent_its_own_randomness,
+    a_declared_duplicate_policy_is_what_actually_happens,
     determinism_metadata_cannot_be_omitted,
     the_ledger_records_intent_before_the_side_effect,
     a_resumed_ledger_replays_a_terminal_record,

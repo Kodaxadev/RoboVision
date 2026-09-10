@@ -123,6 +123,15 @@ to discover it. That is reachable from the public surface: `rv_transaction_statu
 without an id discovers and reconciles this session's recoverable transaction,
 and with one resolves that transaction open or finished.
 
+Both hosts implement this, and the Unity port is where it earns its keep. Unity
+destroys and rebuilds the bridge on a domain reload, at a moment nobody chose,
+while the editing world survives — so the window a host-minted credential loses
+outright is not a rare accident there, it is a routine editor event.
+`tools/unity-ack-loss.sh` drives all seven windows against a real editor using
+the public `HostSession` unchanged, which is also the test of whether the public
+client is genuinely host-agnostic. The Blender equivalent is
+`tests/blender/ack_loss.py`; the evidence is kept apart rather than merged.
+
 All credential transitions run under the session's lock, so no second thread can
 observe a half-transition: create-pending-then-send-then-bind for begin, and
 create-next-then-send-then-promote for adoption, are each one serialized step.
