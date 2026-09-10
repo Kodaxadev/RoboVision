@@ -243,16 +243,25 @@ def build_server():
                     "error": _error_payload(exc)}
 
     @mcp.tool()
-    def rv_transaction_status(host: HostName) -> dict[str, Any]:
-        """Whether a transaction this session opened is waiting to be adopted.
+    def rv_transaction_status(host: HostName, transaction: str | None = None) -> dict[str, Any]:
+        """What became of a transaction. Never repeats its side effect.
 
-        Use after a `SESSION_LOST` error. The host is the only thing that knows
-        what became of the work, so this asks it rather than assuming, and says
-        whether this session still holds the credential to reclaim it.
+        Without an id: discover whether a transaction this session opened is
+        waiting to be adopted, and reconcile which recovery credential is
+        current. Use after a `SESSION_LOST` error — the host is the only thing
+        that knows what became of the work, so this asks rather than assumes.
+
+        With an id: resolve that transaction, open or finished. This is how a
+        lost commit, rollback or discard acknowledgement is settled — by reading
+        the terminal record and its proof, never by sending the operation again
+        to find out what it did the first time.
         """
         try:
-            state = _session(host).recoverable_transaction()
-            return {"ok": True, "host": host, "transaction": state}
+            if transaction:
+                return {"ok": True, "host": host,
+                        "transaction": _session(host).terminal_state(transaction)}
+            return {"ok": True, "host": host,
+                    "transaction": _session(host).recoverable_transaction()}
         except Exception as exc:
             return {"ok": False, "host": host, "error": _error_payload(exc)}
 

@@ -14,7 +14,8 @@ Four losses, four different questions:
   the current one?
 - **adopt, not applied** — the host never rotated; does the client know its
   original is still current?
-- **terminal** — the work finished; can the outcome be read rather than repeated?
+- **terminal** — the work finished; can the outcome be read rather than repeated,
+  through the surface an agent actually has?
 """
 from __future__ import annotations
 
@@ -170,24 +171,36 @@ def a_lost_adoption_that_never_applied_keeps_the_original() -> None:
     session().end_transaction("transaction.discard", transaction)
 
 
-def a_lost_terminal_reply_is_read_not_repeated() -> None:
-    """The work finished; the outcome is retrieved rather than re-applied."""
+def public_status(transaction: str | None = None) -> dict:
+    """What an agent calls: the MCP transaction status tool, by its own path."""
+    if transaction:
+        return {"ok": True, "transaction": session().terminal_state(transaction)}
+    return {"ok": True, "transaction": session().recoverable_transaction()}
+
+
+def a_lost_terminal_reply_is_read_not_repeated(method: str, prefix: str, outcome: str) -> None:
+    """The work finished; the outcome is retrieved rather than re-applied.
+
+    Resolved through the public transaction status surface — the path an agent
+    actually has — rather than only through the session helper underneath it.
+    """
     clean_scene()
     session().call("scene.snapshot")
-    transaction = session().begin_transaction("finished")["result"]["transaction"]
-    session().call("object.create", {"kind": "cube", "name": "Finished"})
+    transaction = session().begin_transaction(prefix)["result"]["transaction"]
+    session().call("object.create", {"kind": "cube", "name": prefix.title()})
     before = len(bpy.data.objects)
 
-    drop_response_to("transaction.discard")
-    FINDINGS["terminal_error"] = lost(
-        lambda: session().end_transaction("transaction.discard", transaction))
+    drop_response_to(method)
+    FINDINGS[f"{prefix}_error"] = lost(
+        lambda: session().end_transaction(method, transaction))
     disarm()
 
-    resolved = session().terminal_state(transaction)
-    FINDINGS["terminal_outcome"] = resolved["outcome"]
-    FINDINGS["terminal_evidence"] = sorted(resolved["finished"] or {})
-    FINDINGS["terminal_no_repeat"] = len(bpy.data.objects) == before
-    FINDINGS["terminal_credential_dropped"] = not session().holds_credential_for(transaction)
+    resolved = public_status(transaction)["transaction"]
+    FINDINGS[f"{prefix}_outcome"] = resolved["outcome"]
+    FINDINGS[f"{prefix}_evidence"] = sorted(resolved["finished"] or {})
+    FINDINGS[f"{prefix}_no_repeat"] = len(bpy.data.objects) == before
+    FINDINGS[f"{prefix}_credential_dropped"] = not session().holds_credential_for(transaction)
+    FINDINGS[f"{prefix}_expected_outcome"] = outcome
 
 
 def conversation(port: int) -> None:
@@ -195,7 +208,11 @@ def conversation(port: int) -> None:
     a_lost_begin_keeps_the_credential_and_finds_its_transaction()
     a_lost_adoption_that_applied_promotes_the_replacement()
     a_lost_adoption_that_never_applied_keeps_the_original()
-    a_lost_terminal_reply_is_read_not_repeated()
+    # Both a discard and a commit: the commit is the one whose evidence a
+    # caller most needs, and background Blender can perform it — unlike a
+    # rollback, whose restoration it cannot verify at all.
+    a_lost_terminal_reply_is_read_not_repeated("transaction.discard", "discarded", "abandoned")
+    a_lost_terminal_reply_is_read_not_repeated("transaction.commit", "committed", "committed")
     session().close()
 
 
@@ -250,15 +267,19 @@ def main() -> None:
     expect(FINDINGS["unrotated_reconciled"], "the unrotated credential was left ambiguous")
     expect(FINDINGS["unrotated_readopt_ok"], "the original credential stopped working")
 
-    expect(FINDINGS["terminal_error"] == "SESSION_LOST",
-           f"a dropped terminal reply was not surfaced: {FINDINGS['terminal_error']}")
-    expect(FINDINGS["terminal_outcome"] == "abandoned",
-           f"the terminal outcome was not resolved: {FINDINGS['terminal_outcome']}")
-    expect("reason" in FINDINGS["terminal_evidence"],
-           f"the terminal record carried no proof: {FINDINGS['terminal_evidence']}")
-    expect(FINDINGS["terminal_no_repeat"], "resolving the outcome repeated the side effect")
-    expect(FINDINGS["terminal_credential_dropped"],
-           "a resolved terminal transaction kept its credential")
+    for prefix, proofs in (("discarded", ("reason",)),
+                           ("committed", ("begin_fingerprint", "final_fingerprint"))):
+        expect(FINDINGS[f"{prefix}_error"] == "SESSION_LOST",
+               f"a dropped {prefix} reply was not surfaced: {FINDINGS[f'{prefix}_error']}")
+        expect(FINDINGS[f"{prefix}_outcome"] == FINDINGS[f"{prefix}_expected_outcome"],
+               f"the {prefix} outcome was not resolved: {FINDINGS[f'{prefix}_outcome']}")
+        for proof in proofs:
+            expect(proof in FINDINGS[f"{prefix}_evidence"],
+                   f"the {prefix} record carried no {proof}: {FINDINGS[f'{prefix}_evidence']}")
+        expect(FINDINGS[f"{prefix}_no_repeat"],
+               f"resolving the {prefix} outcome repeated the side effect")
+        expect(FINDINGS[f"{prefix}_credential_dropped"],
+               f"a resolved {prefix} transaction kept its credential")
 
     (artifact_dir("blender-ack-loss") / "findings.txt").write_text(
         "\n".join(f"{key}={value}" for key, value in sorted(FINDINGS.items())) + "\n",

@@ -248,7 +248,7 @@ class HostSession:
             credential = self._credentials.get(transaction)
             if credential is None:
                 return None
-            self._reconcile(credential, int(state.get("recovery_generation", 0)))
+            self._reconcile(credential, int(state.get("recovery_generation", 0)), transaction)
             return {
                 "transaction": transaction,
                 "state": state.get("state"),
@@ -261,19 +261,42 @@ class HostSession:
             }
 
     @staticmethod
-    def _reconcile(credential: _Credential, host_generation: int) -> None:
+    def _reconcile(credential: _Credential, host_generation: int, transaction: str) -> None:
         """Decide which held credential is current, from a number rather than a guess.
 
         After an adoption whose reply was lost the client holds two secrets and
-        the host holds one verifier. The generation says which: unchanged means
-        the rotation never happened and the old secret is still current; advanced
-        means it did and the replacement — already in hand — is.
+        the host holds one verifier. Exactly two answers are legitimate for one
+        ambiguous rotation: the generation is where it was, so the rotation never
+        happened and the current secret still is; or it is the pending one, so it
+        did and the replacement — already in hand — is now current.
+
+        Matched exactly rather than with an inequality. A host generation ahead
+        of anything this session pended means the two credential histories have
+        diverged — another session adopted in between, or state was lost — and
+        promoting on `>=` would hand over a secret with no reason to believe the
+        host has its verifier. There is no safe guess there, so it is reported.
         """
-        if credential.next_secret is not None and host_generation >= (credential.next_generation or 0):
-            HostSession._promote(credential)
-        elif credential.ambiguous and host_generation == credential.generation:
-            # The rotation did not happen; the credential in use is still valid.
+        if host_generation == credential.generation:
+            # Whether or not an adoption was in flight, the host is where this
+            # session last knew it to be.
             credential.ambiguous = False
+            return
+        if credential.next_secret is not None and host_generation == credential.next_generation:
+            HostSession._promote(credential)
+            return
+        raise RoboVisionError(
+            "CREDENTIAL_STATE_DIVERGED",
+            "the host's recovery generation is not one this session can account for; "
+            "its credential history and this session's have diverged",
+            data={
+                "transaction": transaction,
+                "host_generation": host_generation,
+                "session_generation": credential.generation,
+                "session_pending_generation": credential.next_generation,
+                "remedy": "This session can no longer prove ownership of that transaction. "
+                          "Discarding it is the only outcome it can honestly offer.",
+            },
+        )
 
     def terminal_state(self, transaction: str) -> dict[str, Any]:
         """What became of a transaction, without repeating its side effect.

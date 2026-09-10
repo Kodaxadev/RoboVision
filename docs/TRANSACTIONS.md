@@ -107,10 +107,21 @@ acknowledgement becomes a deterministic lookup rather than a guess.
 Neither mechanism authenticates. The handle identifies a request, the generation
 identifies which credential is current, and only the secret proves authority.
 
+Reconciliation matches the generation **exactly**, and there are only two
+legitimate answers: unchanged means the rotation did not happen and the current
+secret still is current; equal to the pending generation means it did. Anything
+else — a host further ahead than this session ever pended, or behind where it
+last knew the host to be — means the two credential histories have diverged, and
+is reported as `CREDENTIAL_STATE_DIVERGED` rather than guessed at. An inequality
+would have promoted there, handing over a secret whose verifier the host does not
+hold.
+
 **Terminal replies** are resolved by reading. `transaction.status` reports the
 open transaction or the finished record with its proof, so a caller whose commit
 acknowledgement was lost learns the outcome instead of re-sending the operation
-to discover it.
+to discover it. That is reachable from the public surface: `rv_transaction_status`
+without an id discovers and reconciles this session's recoverable transaction,
+and with one resolves that transaction open or finished.
 
 All credential transitions run under the session's lock, so no second thread can
 observe a half-transition: create-pending-then-send-then-bind for begin, and

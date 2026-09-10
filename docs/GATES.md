@@ -250,8 +250,19 @@ its replacement is current — the host's recovery generation reads 1, the clien
 promotes, and the re-adoption succeeds. A **lost adoption that never applied**
 must leave the original current — the generation reads 0, nothing is promoted,
 and the original still works. A **lost terminal reply** must be resolvable by
-reading: `transaction.status` returns the finished record with its reason, the
-object count is asserted unchanged, and the credential is released.
+reading, through the surface an agent actually has: both a discard and a commit
+are dropped after the host applied them, and the public status path returns the
+finished record — the discard's reason, the commit's begin and final
+fingerprints — with the object count asserted unchanged and the credential
+released. Rollback is not among them: background Blender cannot verify a
+restoration, and inventing that claim here would be worse than omitting it.
+
+Credential reconciliation itself is a state machine, and
+`tests/test_session_credentials.py` exercises it without a host, including the
+host generation running ahead of anything the session pended. That value cannot
+be produced on demand by a live host and is exactly where an inequality would
+have promoted a secret with no basis; it raises `CREDENTIAL_STATE_DIVERGED` and
+promotes nothing.
 
 ### Transaction ownership
 
