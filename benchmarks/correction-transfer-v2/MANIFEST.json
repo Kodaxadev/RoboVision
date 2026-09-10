@@ -530,9 +530,9 @@
   },
   "reproducibility_claim": "normalized-authoring equivalent, not byte-identical. Blender issues fresh RoboVision identities on every create, so two correct restores differ in every object UUID, world incarnation, revision and journal position. The signature hashes object names, parent names, world transforms, local and world extents, mesh topology counts, materials and modifiers, and excludes all run-specific identity. Every restore is checked against it, and against the frozen Q0 vector, before a participant run may begin.",
   "hidden_commitments": {
-    "generator": "sha256:d97ecebb6d59368362ce98cdf5779b4ace7b7e917c88443fedd8236ce6b881bf",
-    "sealed_seed_and_target": "sha256:4a1c165c7d0a0188ce4990934725ee2767465cacd84c916207f1aaeeb8b7d8ec",
-    "private_restore_specification": "sha256:3fe2dfdf6441791ee7ce632b6f7477e9eaa47887d1e18bb61f0a92b13c1c38db",
+    "generator": "sha256:e8b1b5203418d78bba6ab8b31dc3f4fb41741e37b6cf6e546815742f45db7c9f",
+    "sealed_seed_and_target": "sha256:72aeb675f66ab44b7c7167699f76c523d3b8065726c8d6f1dd09113997ff967e",
+    "private_restore_specification": "sha256:37a504fa2121084cea8e6dc77a82bbcafddd93e5127af97cdd0b294322a4eeb4",
     "meaning": "published before the first run; the files can be revealed afterwards and re-hashed to show nothing was altered between participants. A hash commitment is evidence of immutability, not disclosure."
   },
   "record_per_run": [
@@ -559,7 +559,7 @@
     "a participant that has read hidden benchmark material, or that built RoboVision, is recorded as non-independent"
   ],
   "files": {
-    "brief.json": "sha256:7f96156347f53d8e596af0ec3bc8e50aa105cf39a34003bca2264b1a02525acc",
+    "brief.json": "sha256:c53bd308deaf85383e6c659ed98dee71bfa6271f6c74b706f9a4e60dde02ce47",
     "CHALLENGE.md": "sha256:c29158e667f9e429df8eae4364326e0a089f65257efa5fe247cd5907268850dc",
     "reference-front.png": "sha256:0dbe7ef3be189f3f41375c2057feede60908f8de035be4ef5c4dd1fbcb7552f1",
     "reference-side.png": "sha256:5cd502b2960cf54c03c9523ccbc23b8a8b3d9ae50bb7f4409049d4cb899f98d7"

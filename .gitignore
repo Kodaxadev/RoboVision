@@ -25,3 +25,10 @@ artifacts/
 .unity-restart-*/
 .unity-ackloss-*/
 .unity-health-*/
+
+# Benchmark answer keys must never reach the public repository, even by
+# accident. The real material lives outside it at $RVBENCH_PRIVATE; this is a
+# second lock on the door rather than the door.
+benchmarks/**/SEALED-*
+benchmarks/**/restore.json
+benchmarks/**/expected.json

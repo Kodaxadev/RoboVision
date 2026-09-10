@@ -64,9 +64,9 @@
     "no scalar overall quality score is produced"
   ],
   "files": {
-    "a0.json": "sha256:782a136e6aac094118f6b6f67be558b97f51d558794d82e311206d3cf372d296",
-    "brief.json": "sha256:8adcbb90d3202f7f10fc4259691666abd7aadaa72c2f33245defff48b7408411",
-    "CHALLENGE.md": "sha256:f6c54c9eb0ee5f841650c41340d687f2d829226ba924f8974c282058604c60a6",
+    "a0.json": "sha256:e7682b46a550ed7af71b49930d8344fb019ecca5f78a38f24e1d724e3d630bfc",
+    "brief.json": "sha256:64c4744170ab47d2b9a705a3ecd56fe4a535362d1f045c77fea21659d1af045b",
+    "CHALLENGE.md": "sha256:f0d5b717030de5098a44aca8b0b2fcdc8e40726d8993c200bde1b75fde2c9281",
     "reference-front.png": "sha256:f6f9a39a47697b9e572c2884ca1eb679f9271ce6995b90a2d4367da76396a122",
     "reference-side.png": "sha256:d948b025383e84038e00b0ae0ee72a49699c305e91778a441a97895528aa0d37"
   }

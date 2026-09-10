@@ -95,8 +95,18 @@ KNOWN_LIMITS = [
 ]
 
 
+# Text files are hashed with line endings normalised to LF. Git rewrites them on
+# checkout, so a digest over raw bytes would differ between the machine that
+# froze the package and a participant's clone of it — and a commitment that fails
+# for a reason unrelated to content is worse than none.
+TEXT = (".md", ".json", ".py", ".txt")
+
+
 def digest(path: Path) -> str:
-    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    data = path.read_bytes()
+    if path.suffix in TEXT:
+        data = data.replace(b"\r\n", b"\n")
+    return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
 def public_brief(raw: dict) -> dict:
