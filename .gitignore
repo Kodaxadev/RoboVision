@@ -32,3 +32,9 @@ artifacts/
 benchmarks/**/SEALED-*
 benchmarks/**/restore.json
 benchmarks/**/expected.json
+
+# Stray participant correction JSON must not land in the repo. Previous
+# participants trajectories are listed as withheld in the v2 manifest, and a
+# claim that fails because someone ran `git add -A` in the wrong directory is
+# still a false claim.
+/attempt-*.json
