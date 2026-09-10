@@ -74,11 +74,23 @@ class BenchmarkFacade:
 
     # ------------------------------------------------------------------ reads
 
+    def _spend(self, count: int) -> None:
+        """Count a participant-caused call, and persist it if the runner can.
+
+        Persisted rather than held in memory because each operator subcommand is
+        its own process: a count that lived only here would be reported as zero
+        by the `finalize` that runs afterwards, which is worse than not counting.
+        """
+        self.observation_calls += count
+        persist = getattr(self._runner, "spend_observation", None)
+        if persist is not None:
+            persist(count)
+
     def _mutates(self, method: str) -> bool:
         if method not in self._mutating:
             described = self._session.call("system.method", {"method": method})
             # Counted: the participant caused it, even though the facade asked.
-            self.observation_calls += 1
+            self._spend(1)
             self._mutating[method] = bool((described.get("result") or {}).get("mutating"))
         return self._mutating[method]
 
@@ -105,7 +117,7 @@ class BenchmarkFacade:
             raise self._refuse(method, "the host declares this operation mutating; "
                                        "authored change goes through submit_correction()")
         response = self._session.call(method, params or {})
-        self.observation_calls += 1
+        self._spend(1)
         return response
 
     def health(self) -> dict[str, Any]:
@@ -118,12 +130,14 @@ class BenchmarkFacade:
         available. Reading it is not performing it.
         """
         response = self._session.call("system.method", {"method": method})
-        self.observation_calls += 1
+        self._spend(1)
         return response.get("result") or {}
 
     def observe(self) -> dict[str, Any]:
         """The discrepancy packet: the participant's primary evidence."""
         evidence = self._runner.observe()
+        # Added to the local total only: the runner persisted these itself while
+        # taking the measurement, and spending them again here would double.
         self.observation_calls += self._runner.take_observation_calls()
         return evidence
 
