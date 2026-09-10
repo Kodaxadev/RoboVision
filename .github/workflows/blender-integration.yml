@@ -207,6 +207,13 @@ jobs:
           mkdir -p artifacts/blender-health
           "${BLENDER_DIR}/blender"             --background             --factory-startup             --python-exit-code 1             --python tests/blender/health.py
 
+      - name: Run RoboVision Artist Loop strict delivery gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/artist-loop-delivery
+          "${BLENDER_DIR}/blender"             --background             --factory-startup             --python-exit-code 1             --python tests/blender/artist_loop_delivery.py
+
       - name: Run RoboVision cross-editor public flow gate
         shell: bash
         run: |

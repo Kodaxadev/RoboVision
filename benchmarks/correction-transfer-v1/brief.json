@@ -1,0 +1,91 @@
+{
+  "name": "frontier coolant pump",
+  "subjects": [
+    "Body",
+    "Manifold",
+    "Flange",
+    "Foot_L",
+    "Foot_R",
+    "Fin_0",
+    "Fin_1",
+    "Fin_2",
+    "Fin_3",
+    "Fin_4",
+    "Fin_5"
+  ],
+  "references": [
+    {
+      "key": "front",
+      "path": "reference-front.png",
+      "view": "v017",
+      "frame": {
+        "center": [
+          0.043450072,
+          0.0,
+          -0.068403535
+        ],
+        "radius": 0.370383167
+      },
+      "content": "projected geometric occupancy",
+      "occupied_fraction": 0.272186
+    },
+    {
+      "key": "side",
+      "path": "reference-side.png",
+      "view": "v041",
+      "frame": {
+        "center": [
+          0.043450072,
+          0.0,
+          -0.068403535
+        ],
+        "radius": 0.370383167
+      },
+      "content": "projected geometric occupancy",
+      "occupied_fraction": 0.233063
+    }
+  ],
+  "patterns": [
+    {
+      "key": "fins",
+      "params": {
+        "members_prefix": "Fin_",
+        "kind": "linear",
+        "count": 6,
+        "axis": "z",
+        "spacing": 0.052,
+        "spacing_tolerance": 0.0015,
+        "orientation_tolerance": 0.5,
+        "dimension_variance": 0.02
+      }
+    }
+  ],
+  "protected_objects": [],
+  "required_invariants": [
+    "geometry.manifold",
+    "geometry.no_degenerate_faces",
+    "geometry.normals_consistent",
+    "geometry.no_unintended_open_boundaries",
+    "geometry.no_self_intersection"
+  ],
+  "max_dimension": 0.7,
+  "envelope": {
+    "width": 0.44,
+    "depth": 0.34,
+    "height": 0.64
+  },
+  "requirements": [
+    "overall envelope approximately 0.44 x 0.34 x 0.64 metres (w x d x h)",
+    "a vertical cooling stack of exactly 6 fins at 0.052 m pitch along +Z, evenly spaced and identical",
+    "a mirror-symmetric pair of mounting feet at the base",
+    "one asymmetric secondary mass on top (a manifold)",
+    "one protruding interface on +X (an outlet flange)",
+    "closed, manifold, consistently wound geometry with no self-intersection within any single part"
+  ],
+  "notes": "The references are the projected geometric occupancy of a blockout massing built to this envelope. They constrain the front and side outlines and nothing behind them. They carry no shading, materials or lighting. The blockout's internal proportions are not stated anywhere. Correction to this brief: geometry truth measures self-intersection within each part, not between parts, so interpenetrating assemblies are not checked and the requirement is worded accordingly.",
+  "known_limits": [
+    "The references depict a coarse blockout massing. They constrain the outer silhouette only and contain no cooling-stack detail, so a correct asset still shows residual front excess against them. Reference metrics measure agreement with the massing, not perfection.",
+    "reference.subject_set is unmeasured for these references: they were not produced by truth.silhouette over the participant's own objects, so the comparison cannot verify that the image depicts the same parts.",
+    "Coverage measures inspectability, not quality. A low observed fraction is not by itself a defect to correct."
+  ]
+}

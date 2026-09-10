@@ -78,6 +78,7 @@ before the run is unchanged after it.
 | asset truth: view coverage, reference shape, pattern | Blender 5.1.2, Windows, headless | pass |
 | asset truth: edit locality | Blender 5.1.2, Windows, headless | pass |
 | asset truth: correction evaluator, accept + 4 reject/rollback branches | Blender 5.1.2, Windows, **interactive** | pass |
+| Artist Loop strict autonomous delivery | Blender 5.1.2, Windows, headless | pass |
 
 The Gate 1 baseline fingerprint is identical on both platforms and versions.
 
@@ -504,6 +505,37 @@ context, and the identity transitions saving makes visible.
 ## Gate 2 — perception bundle
 
 Color/solid/wireframe captures plus depth, normals, object IDs and material IDs are aligned to the same view/projection metadata. The agent can identify a deliberately introduced intersection and select the implicated object IDs.
+
+## Artist Loop strict delivery
+
+`tests/blender/artist_loop_delivery.py` (headless) pins the v0.1 correction
+driver. v0 opened a fully pinned autonomous transaction and then sent the
+individual correction operations through plain low-level calls, so the pins were
+checked once, at begin — a world reload, a unit change or a foreign edit landing
+between the second and third mutation of a correction would have been executed
+straight through.
+
+The gate delivers a three-mutation correction and asserts that each operation
+carried its own `expected_world`, `expected_coordinate_contract`, an
+`if_revision` equal to the revision the *previous* response reported, a distinct
+persisted `idempotency_key` and an `attempt`.
+
+| deliberately stale pin | result | scene afterwards |
+| --- | --- | --- |
+| revision one behind | `STALE_REVISION` | unchanged, fingerprint equal |
+| a world that is not this one | `STALE_WORLD` | unchanged, fingerprint equal |
+| another coordinate contract | `COORDINATE_CONTRACT_CHANGED` | unchanged, fingerprint equal |
+
+Each refusal is followed by a fingerprint comparison, because an error that
+arrives after the side effect is not a refusal. A redelivery of one logical
+operation — same index, same recipe, same key, `attempt=2` — is replayed by the
+host rather than applied a second time.
+
+Fail-closed recovery is covered host-independently by
+`tests/test_artist_loop_fail_closed.py`: an exception in the driver's own
+orchestration after begin rolls back, adopts and rolls back where the connection
+was lost, reads the terminal state where it cannot, reports `unresolved` rather
+than claiming safety, and never commits.
 
 ## Gate 3 — production modeling
 

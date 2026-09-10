@@ -1,0 +1,149 @@
+{
+  "objects": [
+    {
+      "name": "Body",
+      "scale": [
+        0.4,
+        0.3,
+        0.36
+      ],
+      "location": [
+        0.0,
+        0.0,
+        -0.1
+      ]
+    },
+    {
+      "name": "Manifold",
+      "scale": [
+        0.26,
+        0.22,
+        0.13
+      ],
+      "location": [
+        -0.05,
+        0.0,
+        0.145
+      ]
+    },
+    {
+      "name": "Flange",
+      "scale": [
+        0.09,
+        0.16,
+        0.11
+      ],
+      "location": [
+        0.245,
+        0.0,
+        -0.05
+      ]
+    },
+    {
+      "name": "Foot_L",
+      "scale": [
+        0.08,
+        0.3,
+        0.04
+      ],
+      "location": [
+        -0.15,
+        0.0,
+        -0.3
+      ]
+    },
+    {
+      "name": "Foot_R",
+      "scale": [
+        0.08,
+        0.3,
+        0.04
+      ],
+      "location": [
+        0.15,
+        0.0,
+        -0.3
+      ]
+    },
+    {
+      "name": "Fin_0",
+      "scale": [
+        0.022,
+        0.22,
+        0.018
+      ],
+      "location": [
+        -0.215,
+        0.0,
+        -0.2
+      ]
+    },
+    {
+      "name": "Fin_1",
+      "scale": [
+        0.022,
+        0.22,
+        0.018
+      ],
+      "location": [
+        -0.215,
+        0.0,
+        -0.148
+      ]
+    },
+    {
+      "name": "Fin_2",
+      "scale": [
+        0.022,
+        0.22,
+        0.018
+      ],
+      "location": [
+        -0.215,
+        0.0,
+        -0.096
+      ]
+    },
+    {
+      "name": "Fin_3",
+      "scale": [
+        0.022,
+        0.22,
+        0.018
+      ],
+      "location": [
+        -0.215,
+        0.0,
+        -0.044
+      ]
+    },
+    {
+      "name": "Fin_4",
+      "scale": [
+        0.022,
+        0.22,
+        0.018
+      ],
+      "location": [
+        -0.215,
+        0.0,
+        0.008
+      ]
+    },
+    {
+      "name": "Fin_5",
+      "scale": [
+        0.022,
+        0.22,
+        0.018
+      ],
+      "location": [
+        -0.215,
+        0.0,
+        0.06
+      ]
+    }
+  ],
+  "source": "recorded operation list; replayed into a clean scene so every participant starts from a byte-identical asset",
+  "note": "who authored A0 is deliberately not stated here"
+}

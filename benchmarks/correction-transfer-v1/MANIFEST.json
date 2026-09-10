@@ -1,0 +1,65 @@
+{
+  "benchmark": "rvbench:correction-transfer/v1",
+  "task": "correction transfer: improve a frozen flawed asset using RoboVision evidence. Creation ability is a separate experiment and is not measured here.",
+  "budget": {
+    "max_attempts": 8,
+    "attempt_counts": "accepted, rejected and indeterminate attempts all count",
+    "epsilon_policy": "the model declares an epsilon per target; the harness audits it against the metric's own resolution and records any improvement below that resolution as unproven",
+    "tolerance_policy": "protected metrics use the tolerances the model declares; the harness does not relax them on rejection"
+  },
+  "disclosed_to_participant": [
+    "the written asset brief, including the declared overall envelope",
+    "the two reference silhouettes and the frame each was captured in",
+    "the frozen A0, live and inspectable through RoboVision",
+    "the public RoboVision tool surface and its schemas",
+    "system.health",
+    "authoritative observations and the DAT discrepancy packet",
+    "shaded viewport captures through the normal public capture tools"
+  ],
+  "withheld_from_participant": [
+    "the blockout generator that produced the reference silhouettes",
+    "the proxy seed and any sealed ground truth",
+    "fixture-generation implementation of any kind",
+    "target dimensions or proportions not stated in the brief",
+    "the RoboVision repository source, which contains all of the above",
+    "any previous model's trajectory, correction JSON or reasoning"
+  ],
+  "known_limits": [
+    "The references depict a coarse blockout massing. They constrain the outer silhouette only and contain no cooling-stack detail, so a correct asset still shows residual front excess against them. Reference metrics measure agreement with the massing, not perfection.",
+    "reference.subject_set is unmeasured for these references: they were not produced by truth.silhouette over the participant's own objects, so the comparison cannot verify that the image depicts the same parts.",
+    "Coverage measures inspectability, not quality. A low observed fraction is not by itself a defect to correct."
+  ],
+  "required_invariants": [
+    "geometry.manifold",
+    "geometry.no_degenerate_faces",
+    "geometry.normals_consistent",
+    "geometry.no_unintended_open_boundaries",
+    "geometry.no_self_intersection"
+  ],
+  "record_per_run": [
+    "model identity and version",
+    "accepted / rejected / indeterminate",
+    "rollback proofs (begin and final fingerprints per attempt)",
+    "tool calls",
+    "token usage where observable",
+    "elapsed seconds",
+    "DAT Q0 and final vectors",
+    "hard invariants",
+    "shaded visual captures",
+    "manual interventions",
+    "stop reason"
+  ],
+  "comparison_rules": [
+    "identical budget, tools, DAT policy and references for every model",
+    "epsilon and tolerances are never tuned per model",
+    "if a real DAT metric defect is found, stop the comparison, fix it with an independent regression test, version the benchmark and restart affected runs \u2014 never patch mid-comparison",
+    "no scalar overall quality score is produced"
+  ],
+  "files": {
+    "a0.json": "sha256:782a136e6aac094118f6b6f67be558b97f51d558794d82e311206d3cf372d296",
+    "brief.json": "sha256:8adcbb90d3202f7f10fc4259691666abd7aadaa72c2f33245defff48b7408411",
+    "CHALLENGE.md": "sha256:e17ff94ef67a4088d43c8cb78c9e08d7a8ff086f1d82800037c71d3cf79ee44d",
+    "reference-front.png": "sha256:f6f9a39a47697b9e572c2884ca1eb679f9271ce6995b90a2d4367da76396a122",
+    "reference-side.png": "sha256:d948b025383e84038e00b0ae0ee72a49699c305e91778a441a97895528aa0d37"
+  }
+}
