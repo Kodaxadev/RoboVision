@@ -17,9 +17,11 @@ matters:
   followed by a fingerprint comparison, because an error that arrives after the
   side effect is not a refusal, it is a report.
 
-The redelivery case is the reason keys are written to disk before the request
-rather than after the reply: the host recognises the second delivery of a lost
-acknowledgement and replays it instead of authoring it twice.
+The duplicate-delivery case here proves replay only. The genuine lost
+acknowledgement — where the host applied the mutation and the client never heard
+— is driven through the transport fault seam in
+`tests/blender/artist_loop_ack_loss.py`, which also proves the orphan it creates
+is adopted and rolled back rather than reported unresolved.
 """
 from __future__ import annotations
 
@@ -158,10 +160,17 @@ def main() -> None:
     refuses(delivery, wire, rv, 5, "COORDINATE_CONTRACT_CHANGED", "stale_contract")
     delivery.contract = good_contract
 
-    # --- a lost acknowledgement is redelivered, not reapplied ---------------
+    # --- a duplicate delivery is replayed, not reapplied --------------------
     # The same logical operation: same index, same recipe, same key, one higher
-    # attempt. The host resolves the duplicate from the identity that was on
-    # disk before the first delivery went out.
+    # attempt. The host resolves the duplicate from the identity that was on disk
+    # before the first delivery went out.
+    #
+    # This is duplicate replay and nothing more. It does NOT prove a lost
+    # acknowledgement: the first delivery here succeeded and the client knows it
+    # did. The real window — host applies, reply is lost, socket dies, the
+    # transaction is orphaned, recovery adopts it and rolls back — is driven
+    # through the transport's own fault seam in
+    # `tests/blender/artist_loop_ack_loss.py`.
     before = rv.fingerprint()
     replay = delivery.send(2, *operations[2], attempt=2)
     expect(replay["idempotency_key"] == operation_key("attempt:gate01", 2),

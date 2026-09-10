@@ -27,6 +27,7 @@ from typing import Any
 from .artist_loop import Brief, LOOP_SCHEMA, advisory_ranking, measure, packet, resolutions
 from .artist_loop_delivery import Delivery, Ledger, fail_closed
 from .artist_loop_delivery import operation_key as _key
+from .artist_loop_records import evidence_failure, orchestration_failure
 from .errors import RoboVisionError
 from .session import HostSession
 
@@ -193,57 +194,40 @@ def run_correction(session: HostSession, brief: Brief, correction: Correction,
     calls += 1
     transaction = _result(begun)["transaction"]
 
-    # Everything past this point owns an open transaction. An exception anywhere
-    # in it must put the scene back rather than return as though the attempt
-    # simply ended, so the whole remainder runs under fail-closed recovery.
+    # Everything past this point owns an open transaction, but not all of it owns
+    # a transaction that can still be rolled back. `terminal` is the boundary:
+    # empty while the transaction is live and rollback is the safe answer, filled
+    # the instant the host confirms a commit or a rollback. After that the
+    # candidate's outcome is a fact, and no later failure may relabel it.
+    terminal: dict[str, Any] = {}
+    common = dict(attempt_id=attempt_id, model=trajectory.model, started=started,
+                  transaction=transaction, snapshot=snapshot,
+                  correction=correction, evidence=evidence)
     try:
         return _attempt(session, brief, correction, trajectory, transaction,
                         started=started, calls=calls, attempt_id=attempt_id,
                         snapshot=snapshot, before=before, evidence=evidence,
                         world=world, contract=contract, revision=revision,
-                        begun=begun)
+                        begun=begun, terminal=terminal)
     except BaseException as exc:  # noqa: BLE001 - re-raised below, never swallowed
-        recovery = fail_closed(session, transaction, exc)
-        trajectory.record(_orchestration_failure(
-            attempt_id, trajectory, started, calls, transaction, snapshot,
-            correction, evidence, recovery))
+        calls = terminal.get("calls", calls)
+        if terminal:
+            record = evidence_failure(session, calls=calls, terminal=terminal,
+                                      cause=exc, **common)
+        else:
+            record = orchestration_failure(
+                calls=calls, recovery=fail_closed(session, transaction, exc),
+                **common)
+        trajectory.record(record)
         raise
-
-
-def _orchestration_failure(attempt_id, trajectory, started, calls, transaction,
-                           snapshot, correction, evidence,
-                           recovery: dict[str, Any]) -> dict[str, Any]:
-    """A failed attempt, kept as carefully as a rejected one.
-
-    Recorded with a decision of `indeterminate` because that is exactly what it
-    is: the candidate was never judged. Calling it a rejection would imply the
-    metrics had spoken.
-    """
-    return {
-        "attempt": attempt_id,
-        "model": trajectory.model,
-        "started_at": round(started, 3),
-        "elapsed_seconds": round(time.time() - started, 3),
-        "tool_calls": calls,
-        "discrepancy_packet": evidence,
-        "correction": correction.to_json(),
-        "evaluation": {"decision": "indeterminate", "accepted": False,
-                       "reason": "orchestration_failure",
-                       "targets_achieved": []},
-        "outcome": "orchestration_failed",
-        "orchestration_failure": recovery,
-        "transaction": transaction,
-        "begin_fingerprint": snapshot["fingerprint"],
-        "restored": recovery.get("recovery") in ("rolled_back",
-                                                 "adopted_and_rolled_back"),
-    }
 
 
 def _attempt(session: HostSession, brief: Brief, correction: Correction,
              trajectory: Trajectory, transaction: str, *, started: float,
              calls: int, attempt_id: str, snapshot: dict[str, Any],
              before: dict[str, Any], evidence: dict[str, Any], world: str,
-             contract: str, revision: int, begun: dict[str, Any]) -> dict[str, Any]:
+             contract: str, revision: int, begun: dict[str, Any],
+             terminal: dict[str, Any]) -> dict[str, Any]:
     """The part of one attempt that runs with a transaction open."""
     # The begin response carries the revision the first mutation must pin to;
     # deriving it by adding one to the pre-begin revision would be the driver
@@ -293,13 +277,16 @@ def _attempt(session: HostSession, brief: Brief, correction: Correction,
     # metrics; it is a correction that did not happen, and the scene has to go
     # back regardless of what the numbers say.
     accepted = evaluation["accepted"] and failure is None
-    if accepted:
-        finish = _result(session.end_transaction("transaction.commit", transaction))
-        outcome, proof = "committed", finish
-    else:
-        finish = _result(session.end_transaction("transaction.rollback", transaction))
-        outcome, proof = "rolled_back", finish
+    method = "transaction.commit" if accepted else "transaction.rollback"
+    # If this raises, the transaction's fate is unknown and `terminal` stays
+    # empty, so the caller fails closed. It is filled only once the host has
+    # answered — after that the outcome is history, not a hypothesis.
+    finish = _result(session.end_transaction(method, transaction))
     calls += 1
+    outcome, proof = ("committed" if accepted else "rolled_back"), finish
+    terminal.update(outcome=outcome, proof=proof, accepted=accepted,
+                    decision=evaluation["decision"], calls=calls,
+                    targets_achieved=evaluation.get("targets_achieved", []))
 
     final = _result(session.call("scene.snapshot", {"level": "deep"}))
     calls += 1
@@ -331,6 +318,8 @@ def _attempt(session: HostSession, brief: Brief, correction: Correction,
         "evaluation": {k: v for k, v in evaluation.items() if k != "certificates"},
         "epsilon_audit": _epsilon_audit(correction, before, evaluation),
         "outcome": outcome,
+        "phase": "complete",
+        "benchmark_validity": "valid",
         "transaction": transaction,
         "finish_proof": proof,
         "begin_fingerprint": snapshot["fingerprint"],

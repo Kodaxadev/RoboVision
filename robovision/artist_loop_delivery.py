@@ -35,6 +35,7 @@ the very agreement the pin exists to prove.
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -48,13 +49,35 @@ from .session import HostSession
 # asking the same question louder.
 AMBIGUOUS = ("SESSION_LOST", "CONNECTION_CLOSED")
 
+# Not ambiguous at all: the host answered, and its answer was "this transaction
+# is waiting to be adopted by the client that opened it". Reading its terminal
+# state would report an *active* orphan as unresolved and walk away from a
+# transaction this session can prove it owns. Adoption is the mechanism that
+# exists for exactly this, and this is the only refusal that leads to it —
+# TRANSACTION_FINISHED, recovery uncertainty, contamination and foreign
+# ownership all keep their own honest meanings.
+ADOPTABLE = "TRANSACTION_ORPHANED"
+
 
 class Ledger:
-    """Idempotency identities, on disk, before the side effect they name.
+    """The identity of each operation, recorded before it is sent.
 
-    Append-only and boring on purpose. Its whole job is to survive the process
-    that wrote it, so that a redelivery after a lost reply can present the same
-    key and the same recipe and be recognised rather than repeated.
+    Three honest claims, and one deliberate non-claim.
+
+    It **is** a pre-send operation identity record: the key, the recipe and the
+    pins exist before the request that carries them, so a redelivery inside this
+    process can present the same key and the same recipe and be recognised rather
+    than repeated. It **is** evidence for the trajectory and for audit — what was
+    asked for, under which pins, at which attempt. It **is** written and fsynced
+    per entry, which is cheap here.
+
+    It is **not** client-process crash recovery. Nothing reads this file back to
+    resume an interrupted attempt, and the transaction recovery credential that
+    would be needed to do so lives in the `HostSession` and dies with the
+    process. Building process-crash resumption would widen the architecture for
+    no benefit this benchmark has, so the claim is not made. An attempt whose
+    client dies is a lost attempt; the host's own orphan handling is what
+    protects the *scene*, and that is a different guarantee.
     """
 
     def __init__(self, root: Path) -> None:
@@ -68,6 +91,9 @@ class Ledger:
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, default=str) + "\n")
             handle.flush()
+            # Trivial here, so it is done — but see the class docstring: this
+            # makes the *record* durable, not the attempt resumable.
+            os.fsync(handle.fileno())
 
     def entries(self) -> list[dict[str, Any]]:
         if not self.path.is_file():
@@ -187,19 +213,24 @@ def fail_closed(session: HostSession, transaction: str,
         record.update(recovery="rolled_back", proof=proof)
         return record
     except RoboVisionError as exc:
-        step("rollback", ok=False, code=exc.payload.code, message=str(exc))
-        if exc.payload.code not in AMBIGUOUS:
-            # The host answered, and its answer was not "I lost you". Ask it what
-            # the transaction's state actually is rather than inventing one.
+        code = exc.payload.code
+        step("rollback", ok=False, code=code, message=str(exc))
+        if code not in AMBIGUOUS and code != ADOPTABLE:
+            # The host answered, and its answer was neither "I lost you" nor
+            # "adopt me first". Ask it what the transaction's state actually is
+            # rather than inventing one.
             return _resolve_by_reading(session, transaction, record, step)
+        # A refused rollback on a live connection needs no reconnect. Only a
+        # transport loss does, and reconnecting a healthy session would throw
+        # away the very ownership being reclaimed.
+        reconnect = code in AMBIGUOUS
 
-    # The connection went away. The host has orphaned whatever this session
-    # owned, and adoption is the mechanism that exists for exactly this.
     try:
-        step("reconnect", generation=session.reconnect())
+        if reconnect:
+            step("reconnect", generation=session.reconnect())
         recoverable = session.recoverable_transaction()
         step("recoverable", state=recoverable)
-        if recoverable and recoverable.get("recoverable_by_this_session"):
+        if _adoptable(session, transaction, recoverable):
             session.adopt_transaction(transaction)
             step("adopt", ok=True)
             proof = _rollback(session, transaction)
@@ -209,6 +240,23 @@ def fail_closed(session: HostSession, transaction: str,
     except RoboVisionError as exc:
         step("recover", ok=False, code=exc.payload.code, message=str(exc))
     return _resolve_by_reading(session, transaction, record, step)
+
+
+def _adoptable(session: HostSession, transaction: str,
+               recoverable: dict[str, Any] | None) -> bool:
+    """Three conditions, all required, none of them assumed.
+
+    It must be *this* transaction — a host reporting some other orphan is not an
+    invitation to adopt the one being recovered. It must actually require
+    adoption, so a transaction that is finished, contaminated, recovery-uncertain
+    or owned by someone else keeps its own outcome. And this session must hold
+    the credential, because adoption without one is a claim rather than a proof.
+    """
+    if not recoverable or recoverable.get("transaction") != transaction:
+        return False
+    if not recoverable.get("adoption_required"):
+        return False
+    return session.holds_credential_for(transaction)
 
 
 def _resolve_by_reading(session: HostSession, transaction: str,

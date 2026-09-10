@@ -1,3 +1,10 @@
+> **Status: harness validation. Not a blind benchmark.**
+> The material that generated this challenge — the blockout generator, the
+> seed, the fixture code — is committed in the public RoboVision repository,
+> so a model with web or GitHub access can retrieve it. Not handing a
+> participant a checkout is not secrecy. v1 is kept because it proves the
+> harness works; `correction-transfer-v2` is the blind benchmark.
+
 # Correction transfer — `rvbench:correction-transfer/v1`
 
 You are the reasoning client for a 3D asset correction loop. A flawed asset

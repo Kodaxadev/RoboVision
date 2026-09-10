@@ -297,6 +297,17 @@ jobs:
             --python-exit-code 1 \
             --python tests/blender/truth_correction.py
 
+      - name: Run RoboVision Artist Loop recovery gate in interactive Blender
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/artist-loop-ack-loss
+          xvfb-run -a -s "-screen 0 1920x1080x24" \
+            "${BLENDER_DIR}/blender" \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/artist_loop_ack_loss.py
+
       - name: Run RoboVision Gate 2 perception in interactive Blender
         shell: bash
         run: |

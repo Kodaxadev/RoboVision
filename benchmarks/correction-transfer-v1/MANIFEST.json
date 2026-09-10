@@ -1,5 +1,11 @@
 {
   "benchmark": "rvbench:correction-transfer/v1",
+  "status": {
+    "label": "harness validation / not suitable as a blind network-enabled benchmark",
+    "reason": "the challenge-generation material for v1 is committed in a public repository, so the withheld boundary is not real against a model with web or GitHub access",
+    "superseded_by": "rvbench:correction-transfer/v2",
+    "kept_because": "it is the evidence that the harness, the strict delivery path, the evaluator and the rollback proofs work"
+  },
   "task": "correction transfer: improve a frozen flawed asset using RoboVision evidence. Creation ability is a separate experiment and is not measured here.",
   "budget": {
     "max_attempts": 8,
@@ -7,10 +13,12 @@
     "epsilon_policy": "the model declares an epsilon per target; the harness audits it against the metric's own resolution and records any improvement below that resolution as unproven",
     "tolerance_policy": "protected metrics use the tolerances the model declares; the harness does not relax them on rejection"
   },
+  "a0_construction_disclosed": true,
   "disclosed_to_participant": [
     "the written asset brief, including the declared overall envelope",
     "the two reference silhouettes and the frame each was captured in",
     "the frozen A0, live and inspectable through RoboVision",
+    "a0.json: the exact operation list that constructs A0 \u2014 disclosed, because it is in the package",
     "the public RoboVision tool surface and its schemas",
     "system.health",
     "authoritative observations and the DAT discrepancy packet",
@@ -58,7 +66,7 @@
   "files": {
     "a0.json": "sha256:782a136e6aac094118f6b6f67be558b97f51d558794d82e311206d3cf372d296",
     "brief.json": "sha256:8adcbb90d3202f7f10fc4259691666abd7aadaa72c2f33245defff48b7408411",
-    "CHALLENGE.md": "sha256:e17ff94ef67a4088d43c8cb78c9e08d7a8ff086f1d82800037c71d3cf79ee44d",
+    "CHALLENGE.md": "sha256:f6c54c9eb0ee5f841650c41340d687f2d829226ba924f8974c282058604c60a6",
     "reference-front.png": "sha256:f6f9a39a47697b9e572c2884ca1eb679f9271ce6995b90a2d4367da76396a122",
     "reference-side.png": "sha256:d948b025383e84038e00b0ae0ee72a49699c305e91778a441a97895528aa0d37"
   }

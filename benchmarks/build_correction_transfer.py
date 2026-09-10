@@ -28,6 +28,23 @@ PACKAGE = ROOT / "benchmarks" / "correction-transfer-v1"
 
 BENCHMARK = "rvbench:correction-transfer/v1"
 
+# v1 is kept, unaltered, as proof that the benchmark machinery works end to end.
+# It is not a blind benchmark and must not be presented as one: the RoboVision
+# repository is public, and the blockout generator, the proxy seed and the
+# fixture code that produced these references are committed in it. A
+# network-enabled model could simply fetch them. Not handing a participant a
+# checkout is not secrecy, and saying otherwise would be the kind of claim this
+# project exists to avoid making.
+STATUS = {
+    "label": "harness validation / not suitable as a blind network-enabled benchmark",
+    "reason": "the challenge-generation material for v1 is committed in a public "
+              "repository, so the withheld boundary is not real against a model "
+              "with web or GitHub access",
+    "superseded_by": "rvbench:correction-transfer/v2",
+    "kept_because": "it is the evidence that the harness, the strict delivery "
+                    "path, the evaluator and the rollback proofs work",
+}
+
 # Frozen before the first independent run and not tunable per model. Changing
 # any of these is a new benchmark version, not an adjustment.
 BUDGET = {
@@ -53,6 +70,8 @@ DISCLOSED = [
     "the written asset brief, including the declared overall envelope",
     "the two reference silhouettes and the frame each was captured in",
     "the frozen A0, live and inspectable through RoboVision",
+    "a0.json: the exact operation list that constructs A0 — disclosed, "
+    "because it is in the package",
     "the public RoboVision tool surface and its schemas",
     "system.health",
     "authoritative observations and the DAT discrepancy packet",
@@ -122,10 +141,16 @@ def main() -> int:
                    if p.is_file() and p.name != "MANIFEST.json")
     manifest = {
         "benchmark": BENCHMARK,
+        "status": STATUS,
         "task": "correction transfer: improve a frozen flawed asset using "
                 "RoboVision evidence. Creation ability is a separate experiment "
                 "and is not measured here.",
         "budget": BUDGET,
+        # `a0.json` is physically in the participant directory, so it is declared
+        # disclosed. A package that shipped the exact construction recipe while a
+        # manifest called it withheld would be worse than not claiming a boundary
+        # at all. v2 keeps its restore recipe outside the repository instead.
+        "a0_construction_disclosed": True,
         "disclosed_to_participant": DISCLOSED,
         "withheld_from_participant": WITHHELD,
         "known_limits": KNOWN_LIMITS,

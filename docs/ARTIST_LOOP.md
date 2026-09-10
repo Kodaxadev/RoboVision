@@ -85,6 +85,41 @@ candidate" is not evidence that the candidate was good. The failure is recorded
 as a trajectory entry with decision `indeterminate`, and the exception is
 re-raised.
 
+## The delivery ledger, and what it is not
+
+`delivery-ledger.jsonl` records each operation's idempotency key, recipe and pins
+before the request that carries them, and fsyncs each entry. It **is** a pre-send
+operation identity record, so a redelivery inside the live process presents the
+same key and is recognised rather than repeated, and it **is** evidence for the
+trajectory and for audit.
+
+It is **not** client-process crash recovery, and no such claim is made. Nothing
+reads the file back to resume an interrupted attempt, and the transaction
+recovery credential that would be needed to do so lives in the `HostSession` and
+dies with the process. Building process-crash resumption would widen the
+architecture for no benefit this benchmark has. An attempt whose client dies is a
+lost attempt; the host's own orphan handling is what protects the *scene*, which
+is a different guarantee.
+
+## The terminal boundary
+
+The transaction's fate divides an attempt in two, and the two halves permit
+completely different statements.
+
+**Before commit or rollback returns**, an exception means the candidate was never
+judged: fail closed, roll back, record `indeterminate`.
+
+**After the host has confirmed a terminal state**, the candidate's outcome is a
+fact. If evidence collection then fails — the closing snapshot, the trajectory
+write — that is a failure to record what happened, not a change in what happened.
+Relabelling a committed mutation as "indeterminate, rolled back" would be the
+most dangerous lie this harness could tell: the scene would carry the change
+while the record denied it. So the terminal outcome is preserved, the host's own
+terminal state is read back, `final_fingerprint` and `restored` are left null
+rather than invented, and the attempt is marked
+`benchmark_validity: incomplete_evidence` — unusable as evidence, which is not
+the same as undone.
+
 ## Epsilon is audited, not chosen
 
 Every attempt records, per target: the epsilon, the metric's own resolution, the
@@ -93,62 +128,112 @@ the measurement's quantisation is unproven, not success. The frontier run's fina
 attempt was rejected on exactly that basis — 0.00105 against a resolution of
 0.00276.
 
+## The two recovery windows
+
+Both are proved end to end over a real socket, with the response dropped by the
+transport's own fault seam, in `tests/blender/artist_loop_ack_loss.py`
+(interactive Blender).
+
+**A lost mutation acknowledgement.** The mutation reaches the host and applies;
+the reply is lost; the socket dies. The driver stops delivering, the reads that
+follow reconnect, and the host has meanwhile orphaned the transaction the dead
+connection owned. The rollback then answers `TRANSACTION_ORPHANED` — a definite
+answer, not a transport loss — and the first version of `fail_closed` resolved
+definite answers by *reading*, so an active orphan holding the model's mutation
+was reported `unresolved`. It is now adopted and rolled back, but only when all
+three conditions hold: it is the same transaction, it requires adoption, and this
+session proves it holds the credential. `TRANSACTION_FINISHED`, recovery
+uncertainty, contamination and foreign ownership keep their own meanings and are
+never adopted.
+
+**A lost final snapshot after a commit.** Reported committed and incomplete.
+
+The delivery gate's redelivery case proves duplicate *replay* and is named that
+way: its first delivery succeeded and the client knew it did, which is not the
+lost-acknowledgement window at all.
+
 ## The blind correction-transfer benchmark
 
-`benchmarks/correction-transfer-v1/` is the frozen package a participating model
-receives, and it is a directory rather than a repository checkout because most of
-what must be withheld is withheld by not being in it. It contains the brief, the
-two reference silhouettes, the frozen A0 as a replayable operation list, a
-manifest with SHA-256 digests of every file, and `CHALLENGE.md` — the exact
-interface the model is given.
+**v1 (`benchmarks/correction-transfer-v1/`) is harness validation, not a blind
+benchmark, and is labelled so in its own manifest and challenge document.** Its
+generator, seed and fixture code are committed in this public repository, so a
+model with web or GitHub access can retrieve them. Not handing a participant a
+checkout is not secrecy. v1 is kept unaltered because it is the evidence that the
+harness, the strict delivery path, the evaluator and the rollback proofs work.
 
-A0 is **replayed, not rebuilt**: every participant starts from a byte-identical
-asset, which is the premise of a transfer experiment and is not achieved by
-constructing something the same way twice.
+**v2 (`benchmarks/correction-transfer-v2/`) is the blind benchmark.** A new
+asset — an orbital relay mast with a *radial* five-bracket array, deliberately
+sharing no structure with v1's linear-finned pump, so knowledge of the v1
+correction strategy reveals nothing. Its references are captured from the
+correct asset before any fault, so unlike v1 they are achievable and there is no
+irreducible residual to reason around.
 
-**Correction transfer is separated from creation.** The first experiment asks
-only: can model M use RoboVision evidence to diagnose and improve an existing 3D
-asset? All models start from the same A0. Whether a model can construct A0 from
-the brief and then improve its own creation is a second experiment, run only
-afterwards, so that a poor generator result is never read as an inability to use
-the correction loop.
+The generator, the seed, the sealed target specification and the private restore
+recipe live **outside this repository**, at `$RVBENCH_PRIVATE`. Published in the
+manifest before the first run are their SHA-256 commitments, so the files can be
+revealed afterwards and re-hashed to show nothing was altered between
+participants. A hash commitment is evidence of immutability, not disclosure.
 
-Withheld from participants: the blockout generator, the proxy seed, fixture
-implementation, any dimension not in the brief, the repository source, and every
-previous model's trajectory. Disclosed: the brief, the references, the live
-asset, the public tool surface and its schemas, `system.health`, authoritative
-observations, the discrepancy packet, and the shaded viewport captures.
+The participant package contains only the challenge, the brief, the two
+references and the manifest. It carries no construction recipe: A0 arrives
+already restored in the editor. Where a construction recipe *is* in a package —
+v1's `a0.json` — the manifest says `a0_construction_disclosed: true`, because a
+file the participant holds must never be described as withheld.
 
-One limit is disclosed rather than withheld: the references depict a coarse
-blockout with no cooling-stack detail, so reference metrics cannot reach zero on
-a correct asset. Hiding that would not test a skill — it would make every model
-chase a target that does not exist and report a measurement artefact as a
-difference between models.
+### Normalized-authoring equivalence
 
-Frozen before the first independent run: 8 attempts (accepted, rejected and
-indeterminate all count; observation is free), identical tools, identical DAT
-policy, identical references. Epsilon and tolerances are never tuned per model.
-If a real DAT metric defect is found mid-comparison the comparison stops, the
-defect is fixed with an independent regression test, the benchmark is versioned
-and affected runs restart — the metrics are not adjusted because a model
-dislikes them.
+"Byte-identical A0" was wrong and is retired. Blender issues fresh RoboVision
+identities on every create, so two correct restores differ in every object UUID,
+world incarnation, revision and journal position. What the benchmark needs is
+identical *authored* geometry, and `benchmarks/signature.py` hashes exactly that:
+object names, parent names by name, world transforms, local and world extents,
+mesh topology counts, materials and modifiers — excluding every run-specific
+identity. Every restore is checked against the frozen signature **and** against
+the frozen Q0 vector, and the run refuses to begin if either differs. Both are
+needed: the signature says the authored state matches, Q0 says the measurements
+of it do, and they can disagree.
 
-`tests/artist_loop/benchmark.py` runs it: `restore`, `observe`, `attempt`,
-`finalize`. The budget comes from the manifest, never from the command line.
-`finalize` records model identity, accepted/rejected/indeterminate counts,
-per-attempt rollback proofs, tool calls, elapsed time, Q0 and final DAT vectors,
-hard invariants, captures, manual interventions and stop reason. Token usage is
-recorded as self-reported or null: it is not observable from inside the harness
-and an estimate would be the easiest number in the comparison to be wrong about.
-No scalar quality score is produced.
+### The participant boundary is enforced
 
-**The Opus run is the baseline, and it is not independent.** It built A0, it
-wrote DAT and it wrote this loop. It is kept as the builder/client baseline and
-labelled as such. The success criterion for the first independent model is not a
-threshold: it is evidence that a model unfamiliar with RoboVision can interpret
-its measurements, choose at least one useful correction, survive a rejected
-correction without corrupting the asset, and finish with measurable improvement
-and hard invariants intact — preferably with a before/after a human judges better.
+`benchmarks/facade.py` is the participant's whole surface. A method is permitted
+only if it is on the read allowlist *and* the host itself declares it
+non-mutating — the first half denies operations added to RoboVision tomorrow, the
+second denies an operation that becomes mutating without anyone editing the list.
+Transaction control is refused outright, `system.method` stays available for
+every operation including mutating ones (reading a mutation's schema is how a
+correction gets written), and there is exactly one write path,
+`submit_correction`, which delegates to the existing Artist Loop harness rather
+than reimplementing any of it. This is benchmark isolation, not a security
+architecture.
+
+### Budgets, counts and stopping
+
+8 attempts; accepted, rejected and indeterminate all count. Observation is
+unbudgeted, and that choice is recorded in the manifest. Calls are reported as
+`correction_execution_tool_calls`, `participant_observation_tool_calls` and
+`total_participant_facing_calls` — never one merged figure, which would describe
+a model as more efficient than it was. Token usage is self-reported or null and
+is never invented.
+
+A run can end deliberately: `stop(reason, note)` with one of `budget_exhausted`,
+`no_worthwhile_correction_remains`, `cannot_infer_safe_correction`,
+`evidence_insufficient`, `repeated_rejection`, `other`. The categories make runs
+comparable; the note makes one run understandable.
+
+Epsilon and tolerances are never tuned per model. If a real DAT metric defect is
+found mid-comparison the comparison stops, the defect is fixed with an
+independent regression test, the benchmark is versioned and affected runs
+restart. No scalar quality score is produced.
+
+### Independence
+
+Every model that built RoboVision, or has read hidden benchmark material, or
+carries prior RoboVision conversation context, is **non-independent** and
+recorded as such — the Opus v1 run included. The first genuine participant is a
+fresh session, preferably from a different model family, with no repository
+access and no web retrieval of it, holding only the v2 package and the facade.
+It may know Blender: this is not a test of ignorance, it is a test of whether
+RoboVision's exposed evidence and tools are sufficient.
 
 ## What is deliberately absent
 

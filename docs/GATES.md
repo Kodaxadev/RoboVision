@@ -79,6 +79,7 @@ before the run is unchanged after it.
 | asset truth: edit locality | Blender 5.1.2, Windows, headless | pass |
 | asset truth: correction evaluator, accept + 4 reject/rollback branches | Blender 5.1.2, Windows, **interactive** | pass |
 | Artist Loop strict autonomous delivery | Blender 5.1.2, Windows, headless | pass |
+| Artist Loop lost-ACK recovery and terminal boundary | Blender 5.1.2, Windows, **interactive** | pass |
 
 The Gate 1 baseline fingerprint is identical on both platforms and versions.
 
@@ -536,6 +537,30 @@ Fail-closed recovery is covered host-independently by
 orchestration after begin rolls back, adopts and rolls back where the connection
 was lost, reads the terminal state where it cannot, reports `unresolved` rather
 than claiming safety, and never commits.
+
+## Artist Loop recovery windows
+
+`tests/blender/artist_loop_ack_loss.py` (**interactive**) drives two sequences
+over a real socket, dropping the response with the transport's own fault seam —
+after the handler ran, before delivery — so the host really has applied work the
+client never heard about.
+
+| window | proved |
+| --- | --- |
+| mutation applies, reply lost, socket dies | delivery raises `SESSION_LOST`; no second mutation lands; the reads that follow reconnect; the host orphans the transaction; recovery adopts it and rolls back; the scene hashes to the transaction-begin fingerprint; no transaction remains open |
+| commit succeeds, final snapshot lost | the attempt is recorded `post_terminal`, outcome `committed`, decision `accept`, the host's terminal state read back as committed, `benchmark_validity: incomplete_evidence`, `final_fingerprint` and `restored` left null, and the committed change verifiably still in the scene |
+
+The first is the window the original `fail_closed` missed: `TRANSACTION_ORPHANED`
+is a definite answer rather than a transport loss, so it resolved it by reading
+and reported an *active* orphan as `unresolved`. Adoption now happens only when
+the transaction matches, adoption is required, and the session proves it holds
+the credential — `tests/test_artist_loop_fail_closed.py` covers each way that
+fails, plus that `TRANSACTION_FINISHED` is read rather than reclaimed.
+
+`tests/test_benchmark_facade.py` covers the participant boundary: reads allowed,
+mutations denied, transaction control denied, unknown methods denied by default,
+and a method the host newly declares mutating denied without touching the
+allowlist.
 
 ## Gate 3 — production modeling
 
