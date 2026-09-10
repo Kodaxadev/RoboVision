@@ -141,10 +141,13 @@ def _close_failed(runtime, intent, key, exc, recovery) -> None:
             recovered=recovered,
             post_revision=runtime.revision,
         )
-    except OSError:
+    except OSError as ledger_error:
         # A ledger that cannot be written is not a reason to swallow the
-        # original error, which is what the caller is actually waiting for.
-        pass
+        # original error, which is what the caller is actually waiting for. It is
+        # recorded, though: `system.health` reports it, because a durable record
+        # with a hole in it is exactly what a recovering agent must not trust
+        # silently.
+        runtime.note_ledger_error("result", ledger_error)
     if key is None:
         return
     if recovered:

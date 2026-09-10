@@ -40,6 +40,12 @@ def _entry(summary: str, tags: tuple[str, ...], params: dict[str, Any]) -> dict[
 METHOD_DOCS: dict[str, dict[str, Any]] = {
     "system.ping": _entry("Check that the Blender host is responsive.", ("system",), _object()),
     "system.hello": _entry("Discover editor version, security facts, revision and the compact live capability catalog.", ("system", "discovery"), _object()),
+    "system.health": _entry(
+        "Structured readiness: whether it is presently safe to observe, begin a correction, "
+        "mutate, verify, and whether a transaction must be resolved first.",
+        ("system", "discovery", "health"),
+        _object(),
+    ),
     "system.capabilities": _entry(
         "Search and page the live operation catalog; optionally include exact parameter schemas.",
         ("system", "discovery"),

@@ -66,6 +66,7 @@ namespace Kodaxa.RoboVision.Editor
         private static readonly Dictionary<string, MethodDoc> Docs = new Dictionary<string, MethodDoc>(StringComparer.Ordinal)
         {
             ["system.ping"] = Doc("Check that the Unity host is responsive.", new[] { "system" }, ObjectSchema()),
+            ["system.health"] = Doc("Structured readiness: whether it is presently safe to observe, begin a correction, mutate, verify, and whether a transaction must be resolved first.", new[] { "system", "discovery", "health" }, ObjectSchema()),
             ["system.hello"] = Doc("Discover Unity/editor state, scene revision, security facts and the compact live capability catalog.", new[] { "system", "discovery" }, ObjectSchema()),
             ["system.capabilities"] = Doc(
                 "Search and page the live Unity operation catalog; optionally include exact parameter schemas.",

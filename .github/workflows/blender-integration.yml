@@ -5,11 +5,13 @@ on:
     paths:
       - "hosts/blender/**"
       - "tests/blender/**"
+      - "tests/public_flow.py"
       - ".github/workflows/blender-integration.yml"
   pull_request:
     paths:
       - "hosts/blender/**"
       - "tests/blender/**"
+      - "tests/public_flow.py"
       - ".github/workflows/blender-integration.yml"
   workflow_dispatch:
 
@@ -139,6 +141,20 @@ jobs:
             --factory-startup \
             --python-exit-code 1 \
             --python tests/blender/mcp_session.py
+
+      - name: Run RoboVision health gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-health
+          "${BLENDER_DIR}/blender"             --background             --factory-startup             --python-exit-code 1             --python tests/blender/health.py
+
+      - name: Run RoboVision cross-editor public flow gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-public-flow
+          "${BLENDER_DIR}/blender"             --background             --factory-startup             --python-exit-code 1             --python tests/blender/public_flow_gate.py
 
       - name: Run RoboVision idempotency gate
         shell: bash

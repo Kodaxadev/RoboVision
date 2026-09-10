@@ -121,14 +121,48 @@ def build_server():
         """Discover a connected Blender or Unity RoboVision host.
 
         Always call this when starting work in an unfamiliar editor session. It
-        returns exact editor/version information, scene revision, security facts,
-        limitations and the compact live structured operation list. Never assume
-        Blender and Unity expose identical capabilities.
+        returns exact editor/version information, scene revision, world
+        incarnation, coordinate contract and units, state domain, journal and
+        transaction state, security facts, limitations and the compact live
+        structured operation list. Never assume Blender and Unity expose
+        identical capabilities, and never hard-code a host's coordinate contract
+        — read it from here or from rv_health.
+
+        Use rv_health instead when the question is whether an action is
+        currently possible rather than what this host is.
         """
         try:
             return _call(host, "system.hello", {}, None)
         except Exception as exc:
             return {"ok": False, "host": host, "error": _error_payload(exc)}
+
+    @mcp.tool()
+    def rv_health(host: HostName = "blender") -> dict[str, Any]:
+        """Ask whether it is presently safe to observe, correct, mutate or verify.
+
+        Not a ping. Every readiness answer is independent and carries the reason
+        it was decided on, so read `ready_for` rather than the overall `status`:
+        an uncertain journal degrades incremental polling while an authoritative
+        observation is still perfectly available, a background or batch editor
+        cannot capture and can still author, and an orphaned transaction blocks a
+        new correction while reads answer normally.
+
+        Call this before planning work in an unfamiliar session, and again after
+        anything unexpected. It also carries the pins a strict autonomous
+        invocation needs — world incarnation, coordinate contract, authored
+        revision, journal cursor — so they never have to be guessed or
+        hard-coded per editor.
+
+        The `session` block is separate from `host` on purpose: it holds the
+        facts this client library knows and the editor structurally cannot, such
+        as whether this session still holds the credential that could reclaim an
+        orphaned transaction. The credential itself is never exposed.
+        """
+        try:
+            return _session(host).health()
+        except Exception as exc:
+            return {"ok": False, "host": host, "method": "system.health",
+                    "error": _error_payload(exc)}
 
     @mcp.tool()
     def rv_tools(

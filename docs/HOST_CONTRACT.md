@@ -5,18 +5,21 @@ Every RoboVision editor host implements the same behavioral contract even when e
 ## Required substrate
 
 1. `system.ping`
-2. `system.hello`
-3. `system.capabilities`
-4. scene revision tracking and stale-write rejection
-5. stable authoring-time object identity
-6. `scene.describe`
-7. `scene.snapshot`
-8. `scene.diff`
-9. object inspect/create/delete/transform/duplicate/parent
-10. at least one visual capture path with view metadata
-11. validation primitives
-12. transaction begin/commit/rollback with restoration verification
-13. structured exceptions; no raw traceback as the only response
+2. `system.hello`, publishing every pin a strict autonomous call must supply —
+   world incarnation, coordinate contract, units, state domain, authored
+   revision and journal position — so an external client never hard-codes one
+3. `system.health`, the structured readiness report
+4. `system.capabilities`
+5. scene revision tracking and stale-write rejection
+6. stable authoring-time object identity
+7. `scene.describe`
+8. `scene.snapshot`
+9. `scene.diff`
+10. object inspect/create/delete/transform/duplicate/parent
+11. at least one visual capture path with view metadata
+12. validation primitives
+13. transaction begin/commit/rollback with restoration verification
+14. structured exceptions; no raw traceback as the only response
 
 ## Mutation rule
 

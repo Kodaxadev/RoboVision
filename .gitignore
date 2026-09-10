@@ -19,7 +19,9 @@ artifacts/
 .unity-restart/
 .unity-soak/
 .unity-ackloss/
+.unity-health/
 # Throwaway projects for a second editor version, e.g. the declared 6000.0 floor.
 .unity-testbed-*/
 .unity-restart-*/
 .unity-ackloss-*/
+.unity-health-*/

@@ -23,6 +23,24 @@ namespace Kodaxa.RoboVision.Editor
         private RoboVisionLedger _ledger;
         private RoboVisionInvocations _invocations;
         private string _ledgerWorld;
+        /// <summary>The last time the durable spine could not be read or written.</summary>
+        /// <remarks>
+        /// One fact, overwritten — not a log and not a history. It is kept because
+        /// a recovering agent needs to know the record it is about to trust may
+        /// have a hole in it, and <c>system.health</c> is where it asks.
+        /// </remarks>
+        private JObject _ledgerError;
+
+        internal JObject LedgerError => _ledgerError;
+
+        internal void NoteLedgerError(string operation, Exception error)
+        {
+            _ledgerError = new JObject
+            {
+                ["operation"] = operation,
+                ["error"] = error.GetType().Name + ": " + error.Message
+            };
+        }
 
         internal RoboVisionLedger Ledger { get { EnsureOperationRecords(); return _ledger; } }
         internal RoboVisionInvocations Invocations { get { EnsureOperationRecords(); return _invocations; } }
@@ -61,6 +79,8 @@ namespace Kodaxa.RoboVision.Editor
             _ledger = RoboVisionLedger.Open(world);
             _invocations = new RoboVisionInvocations();
             _ledgerWorld = world;
+            // A previous world's failure says nothing about this one's file.
+            _ledgerError = null;
             if (!WorldSettled || !WorldResumed) return;
             try
             {
@@ -71,6 +91,7 @@ namespace Kodaxa.RoboVision.Editor
                 // An unreadable ledger is not a licence to invent history. The
                 // records stay empty, which means a retry of a key from before
                 // the reload is answered INDETERMINATE rather than executed.
+                NoteLedgerError("resume", ex);
                 UnityEngine.Debug.LogWarning("RoboVision: could not resume the operation ledger: " + ex.Message);
             }
         }
@@ -206,10 +227,13 @@ namespace Kodaxa.RoboVision.Editor
                     ["post_revision"] = Revision
                 });
             }
-            catch (IOException)
+            catch (IOException ledgerError)
             {
                 // A ledger that cannot be written is not a reason to swallow the
                 // original error, which is what the caller is actually waiting for.
+                // It is recorded, though: a durable record with a hole in it is
+                // exactly what a recovering agent must not trust silently.
+                NoteLedgerError("result", ledgerError);
             }
             if (key == null) return;
             if (recovered) Invocations.ProveNotApplied(key);

@@ -221,6 +221,48 @@ class HostSession:
                 self._credentials.pop(transaction, None)
             return response
 
+    # ---------------------------------------------------------------- health
+
+    def health(self, **fields: Any) -> dict[str, Any]:
+        """The host's readiness report, plus the part only this side can know.
+
+        Two blocks, deliberately never merged. `host` is exactly what the editor
+        said, untouched, so a caller comparing two editors is comparing their
+        answers rather than this library's opinion of them. `session` is what the
+        host is structurally incapable of knowing: whether the connection that
+        owns a transaction is this one, and whether this session still holds the
+        credential that could reclaim it.
+
+        The credential itself never appears here, or anywhere else. Only the fact
+        that one is held — which is a fact about this process, not a permission,
+        and cannot be used by anyone who reads it.
+
+        Sent on the session's own connection, because ownership *is* the
+        connection: a health report fetched over a second socket would describe a
+        caller that does not exist by the time anyone acts on it.
+        """
+        with self._lock:
+            response = self.call("system.health", {}, **fields)
+            report = response.get("result") or {}
+            situation = ((report.get("subsystems") or {}).get("transaction") or {})
+            state = situation.get("state") or {}
+            transaction = state.get("transaction")
+            response["session"] = {
+                "connection_generation": self._generation,
+                "holds_recovery_credential": bool(
+                    transaction is not None and transaction in self._credentials),
+                # Only meaningful for a transaction waiting to be adopted; a
+                # session that says it could recover an active one it does not own
+                # would be claiming an authority adoption exists to withhold.
+                "recoverable_by_this_session": bool(
+                    transaction is not None
+                    and transaction in self._credentials
+                    and bool(state.get("adoption_required"))),
+                "pending_begins": len(self._pending),
+                "note": "session-side facts; the host cannot observe any of them",
+            }
+            return response
+
     # -------------------------------------------------------------- recovery
 
     def recoverable_transaction(self) -> dict[str, Any] | None:

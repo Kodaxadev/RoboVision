@@ -85,6 +85,22 @@ namespace Kodaxa.RoboVision.Editor
             return state;
         }
 
+        /// <summary>The last transaction to end, for a caller that has none open.</summary>
+        /// <remarks>
+        /// Reported by health where "no transaction" would otherwise be
+        /// indistinguishable from "the one you were holding finished a moment
+        /// ago". A read of the small finished record, never a claim of authority
+        /// over it, and it carries no credential for the same reason nothing else
+        /// here does.
+        /// </remarks>
+        public JObject MostRecentlyFinished()
+        {
+            JObject last = null;
+            foreach (var id in _finishedOrder)
+                if (_finished.TryGetValue(id, out var record)) last = record;
+            return last != null ? (JObject)last.DeepClone() : null;
+        }
+
         /// <summary>
         /// What became of a transaction, without touching it.
         /// </summary>

@@ -330,6 +330,45 @@ autonomous path: `transaction.begin` against a revision that has already moved i
 refused `STALE_REVISION` with no contract declared at all. A checkpoint taken
 from a scene the caller never planned against is a rollback target nobody chose.
 
+### Readiness, and what an external agent can discover
+
+`RoboVisionHealthTests.cs` and `RoboVisionHealthLifecycleTests.cs` cover
+`system.health`. Each case moves one thing and checks the others did not move
+with it: an uncertain journal degrades `incremental_changes` and leaves
+`semantic_observation` ready and `mutate` untouched; a transaction owned by
+another connection blocks mutation with `transaction_active_foreign` while the
+same connection's `object.create` is refused `TRANSACTION_FOREIGN`, so health and
+dispatch cannot disagree; an orphan asks to be adopted without the host ever
+suggesting the caller could do the adopting. Play mode blocks `mutate` with
+reason `play_mode` while `semantic_observation` stays ready and the executor is
+demonstrably alive — the request arrived and ran — and the report carries
+`state_domain: play_runtime` so the authored revision beside it cannot be read as
+a version of what is on screen. A transaction left recovery-uncertain by a domain
+reload in an unsaved scene reports `verified_rollback_available: false` and is
+then genuinely refused `TRANSACTION_RECOVERY_UNCERTAIN`. Three consecutive health
+calls move neither the revision, the fingerprint nor the journal epoch.
+
+`tools/unity-health-gate.sh` runs `tests/public_flow.py` — the same module the
+Blender gate runs, which knows nothing about either editor — against a real
+editor over a real socket, driven by the public Python `HostSession`.
+
+This gate exists because the EditMode suite structurally cannot prove it. An
+in-process test can call `RoboVisionRecipe.CoordinateContract()` directly, so
+Unity enforced a coordinate contract it never published in `system.hello` and
+every in-editor autonomous test kept passing while an external model had no way
+to supply the pin it would then be refused for omitting. Only a client outside
+the package finds that out. The gate proves an external agent can read the world
+incarnation, coordinate contract, units, state domain, authored revision and
+journal cursor out of `system.hello`, take an authoritative observation, and
+issue a fully pinned autonomous begin and mutation without importing anything
+from the package — and that a guessed contract is refused
+`COORDINATE_CONTRACT_CHANGED`.
+
+`system.hello` also states ownership as `ownership = connection` and
+`orphan_requires_adoption = true`. The paragraph they replaced still said an
+orphan could be committed or rolled back by any client, which stopped being true
+the moment adoption began requiring the recovery credential.
+
 ### Defects this gate found
 
 - **a cross-host defect the port exposed.** Blender's invocation ledger had a
@@ -425,11 +464,13 @@ apart from the 6000.6 ones rather than merged into a single number:
 
 | editor | gate | result |
 | --- | --- | --- |
-| 6000.0.83f1 (declared floor) | EditMode suite | 147 tests, 143 passed, 0 failed, 4 SceneView skips |
+| 6000.0.83f1 (declared floor) | EditMode suite | 157 tests, 153 passed, 0 failed, 4 SceneView skips |
 | 6000.0.83f1 (declared floor) | acknowledgement loss | 7/7 windows, `result: ok` |
+| 6000.0.83f1 (declared floor) | health + public flow | `result: ok` |
 | 6000.0.83f1 (declared floor) | restart + package re-resolution | 15/15 checks, all three phases on 6000.0.83f1 |
-| 6000.6.0f1 (development) | EditMode suite | 147 tests, 143 passed, 0 failed, 4 SceneView skips |
+| 6000.6.0f1 (development) | EditMode suite | 157 tests, 153 passed, 0 failed, 4 SceneView skips |
 | 6000.6.0f1 (development) | acknowledgement loss | 7/7 windows, `result: ok` |
+| 6000.6.0f1 (development) | health + public flow | `result: ok` |
 | 6000.6.0f1 (development) | restart + package re-resolution | 15/15 checks, all three phases on 6000.6.0f1 |
 | 6000.0.83 (CI) | compile only | `ROBOVISION_UNITY_COMPILE_PASS` |
 
@@ -438,7 +479,9 @@ neither run's numbers can be read as the other's. At the world/identity
 checkpoint the suite was 112/108/0/4 and the restart gate 11/11; at the
 transaction checkpoint 118/114/0/4. The counts above are the current ones — the
 suite grew by the idempotency, ledger-reload and autonomous-contract fixtures,
-and by the commit-after-reload and four-transition proofs.
+by the commit-after-reload and four-transition proofs, and most recently by the
+ten health fixtures, which include the play-mode and recovery-uncertain cases
+only a real editor lifecycle can produce.
 
 Both editors were confirmed from the run's own log — `Initialize engine version:
 6000.0.83f1` — rather than from the path it was launched by. Compile coverage

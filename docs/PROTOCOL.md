@@ -171,10 +171,31 @@ Every host returns:
 - protocol version
 - RoboVision host implementation/version
 - editor name/version
-- current scene revision
+- current authored scene revision
+- bridge and world incarnation
+- state domain — `authored` or `play_runtime`
+- coordinate contract and the unit convention behind it
+- journal state: epoch, certainty and cursor
+- transaction state, plus ownership as facts rather than prose:
+  `ownership: "connection"` and `orphan_requires_adoption: true`
 - enabled capabilities
 - transport/security facts
 - limitations/warnings relevant to this editor/version
+
+Everything a strict autonomous invocation must pin is in that list, and that is
+why the list is exactly this. A host that enforces a coordinate contract without
+publishing it leaves an external client unable to supply the pin it will then be
+refused for omitting — the value is discoverable or the contract is unusable
+from outside the package. Clients must never hard-code a host's contract.
+
+## `system.health`
+
+Whether it is presently safe and meaningful to act, as a structured readiness
+report rather than a boolean. See §9 of
+[CROSS_EDITOR_STATE.md](CROSS_EDITOR_STATE.md) for the full contract: one
+five-value vocabulary, independent `ready_for` answers each carrying their basis
+or reason, thin subsystem facts, and no mutation, capture or undo performed to
+establish any of it.
 
 ## Method metadata
 

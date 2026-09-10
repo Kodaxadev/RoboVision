@@ -289,6 +289,20 @@ namespace Kodaxa.RoboVision.Editor
             Trim();
         }
 
+        /// <summary>How many invocations are interrupted or still unresolved.</summary>
+        /// <remarks>
+        /// A count rather than a listing: an autonomous recovery needs to know
+        /// whether there is anything to resolve, and a query API over this record
+        /// would be a different project.
+        /// </remarks>
+        internal int InterruptedCount()
+        {
+            var total = 0;
+            foreach (var record in _records.Values)
+                if (record.State == Interrupted || record.State == Reserved) total++;
+            return total;
+        }
+
         private void Trim()
         {
             while (_order.Count > Retained)

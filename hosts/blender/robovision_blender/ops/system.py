@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import bpy
 
-from ..registry import INDEPENDENT, NOTIFIED, HostError
-from ..protocol import HOST_VERSION, PROTOCOL_VERSION
+from .. import health as health_report
+from ..registry import AUTHORITATIVE, INDEPENDENT, NOTIFIED, HostError
+from ..protocol import AUTHORED, HOST_VERSION, PROTOCOL_VERSION
 from ..recipe import coordinate_contract, units
 
 
@@ -56,6 +57,11 @@ def hello(_params, runtime):
         "bridge": runtime.bridge,
         "journal": runtime.journal.state(),
         "world_incarnation": runtime.world_incarnation,
+        # Blender has no runtime universe to confuse with the authored one, so
+        # this is a constant here — published anyway, because a client driving
+        # both editors reads the same field in both rather than inferring it
+        # from which host answered.
+        "state_domain": AUTHORED,
         "coordinate_contract": coordinate_contract(),
         "units": units(),
         "document": runtime.document,
@@ -65,6 +71,11 @@ def hello(_params, runtime):
         "transaction": {
             "active": runtime.transactions.active is not None,
             "state": runtime.transactions.state(),
+            # Structured facts rather than policy prose. A paragraph describing
+            # ownership is a paragraph that can drift out of step with the code
+            # enforcing it; two machine-readable statements cannot.
+            "ownership": "connection",
+            "orphan_requires_adoption": True,
         },
         "capability_count": len(live_capabilities),
         "capabilities": live_capabilities,
@@ -89,6 +100,10 @@ def hello(_params, runtime):
     }
 
 
+def health(_params, runtime):
+    return health_report.report(runtime)
+
+
 def register(registry) -> None:
     # ping and hello report the scene revision and the journal position without
     # reporting any scene state, so they cannot pair current geometry with a
@@ -96,6 +111,12 @@ def register(registry) -> None:
     # revision takes a snapshot.
     registry.add("system.ping", ping, reads=NOTIFIED, stability="beta")
     registry.add("system.hello", hello, reads=NOTIFIED, stability="beta")
+    # Health is the one system call that pays for an authoritative read, and the
+    # payment is the point: its successful execution proves the request arrived
+    # and ran on the editor thread, and its resync proves the editing context is
+    # readable and that the world and revision it reports belong to the state it
+    # just read. It authors nothing to establish any of that.
+    registry.add("system.health", health, reads=AUTHORITATIVE, stability="beta")
     # Pure protocol metadata: the catalog does not depend on the scene at all.
     registry.add("system.capabilities", capabilities, reads=INDEPENDENT, stability="beta")
     registry.add("system.method", method, reads=INDEPENDENT, stability="beta")

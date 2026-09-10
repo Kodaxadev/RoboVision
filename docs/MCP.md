@@ -16,7 +16,8 @@ robovision-mcp
 
 The adapter exposes:
 
-- `rv_status(host)` — calls `system.hello` and returns the live editor/version/revision/capability contract.
+- `rv_status(host)` — calls `system.hello` and returns the live editor/version/revision/capability contract, including the world incarnation, coordinate contract and units a strict autonomous call must pin. Never hard-code a host's coordinate contract; read it from here.
+- `rv_health(host)` — calls `system.health` on the same persistent session and returns the structured readiness report: whether it is presently safe to observe, begin a correction, mutate, verify, and whether a transaction must be resolved first. Every answer is independent and carries its basis, so read `ready_for` rather than the overall `status`. The separate `session` block carries what the client library knows and the host cannot, such as whether this session still holds the credential that could reclaim an orphaned transaction; the credential itself is never exposed.
 - `rv_tools(host, query, prefix, tags, include_schema, offset, limit)` — searches the connected host's live operation catalogue instead of a hard-coded list.
 - `rv_method(host, method)` — returns the exact parameter schema and safety metadata for one method.
 - `rv_call(host, method, params, if_revision)` — forwards one structured RoboVision operation.

@@ -179,7 +179,11 @@ Reasons are named, not free text: `owner_disconnected`, `world_replaced`,
 `document_changed`, `bridge_reloaded`, `checkpoint_identities_lost`,
 `discarded_by_client`. `system.hello` reports the state, the world, the owner,
 whether adoption is required and whether a verified rollback is available —
-which is what health will consume rather than reinterpreting internals.
+which is what `system.health` consumes rather than reinterpreting internals. It
+also states the policy as two facts, `ownership = connection` and
+`orphan_requires_adoption = true`, rather than as a paragraph: the paragraph it
+replaced still said any client could finish an orphan long after adoption began
+requiring the recovery credential, and prose is exactly what drifts.
 
 **Contamination is not ownership,** and the two are answered in that order.
 Ownership says who is authorised to act; contamination says whether acting can
@@ -200,8 +204,10 @@ elevated feature is better than an unauthenticated one.
 
 - the owner reconnecting with its recovery token adopts its own transaction
 - a supervisor client holding the recovery capability may adopt
-- any other client may **inspect** an orphan and see it reported in health and
-  in `system.hello`, but gains no authority over it
+- any other client may **inspect** an orphan and see it reported in
+  `system.health` and in `system.hello`, but gains no authority over it — health
+  reports the situation as `orphaned_adoption_required` and never suggests the
+  caller can act on it, because the host cannot know who holds the credential
 - forced recovery remains available and is audited as an elevated operation
 
 **Owed tests.** Owner disconnect; owner reconnect and adopt; adoption by a

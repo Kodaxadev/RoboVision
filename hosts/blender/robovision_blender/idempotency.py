@@ -60,6 +60,16 @@ class IdempotencyLedger:
 
     # ------------------------------------------------------------- lookup
 
+    def interrupted_count(self) -> int:
+        """How many invocations are known to have been interrupted or left unknowable.
+
+        A count rather than a listing: what an autonomous recovery needs to know
+        is whether there is anything to resolve, and building a query API over
+        this record would be a different project.
+        """
+        return sum(1 for record in self.records.values()
+                   if record.state in (RESERVED, INTERRUPTED))
+
     def _refuse(self, code: str, message: str, **data: Any) -> HostError:
         return HostError(code, message, data=data)
 

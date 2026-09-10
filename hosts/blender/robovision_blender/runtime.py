@@ -58,6 +58,14 @@ class RoboVisionRuntime:
         # world, because that is the scope a logical operation belongs to.
         self.ledger = OperationLedger.open(self.world_incarnation)
         self.invocations = IdempotencyLedger()
+        # The last time the durable spine could not be written, kept because a
+        # recovering agent needs to know the record it is about to trust may have
+        # a hole in it. Not a log and not a history: one fact, overwritten.
+        self.last_ledger_error: dict[str, Any] | None = None
+
+    def note_ledger_error(self, operation: str, exc: BaseException) -> None:
+        self.last_ledger_error = {"operation": operation,
+                                  "error": f"{type(exc).__name__}: {exc}"}
 
     @property
     def running(self) -> bool:
@@ -179,6 +187,8 @@ class RoboVisionRuntime:
         """
         self.ledger = OperationLedger.open(self.world_incarnation)
         self.invocations = IdempotencyLedger()
+        # A previous world's write failure says nothing about this one's file.
+        self.last_ledger_error = None
 
     def registry_ready(self) -> None:
         if self._registered_tools:

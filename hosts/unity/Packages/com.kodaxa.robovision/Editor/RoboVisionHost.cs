@@ -162,6 +162,17 @@ namespace Kodaxa.RoboVision.Editor
                 _ => new JObject { ["pong"] = true, ["host"] = "unity", ["revision"] = Revision },
                 reads: ReadsNotified,
                 stability: "beta");
+            // Health is the one system call that pays for an authoritative read,
+            // and the payment is the point: its successful execution proves the
+            // request arrived and ran on the editor thread, and its resync proves
+            // the editing context is readable and that the world and revision it
+            // reports belong to the state it just read. It authors nothing to
+            // establish any of that.
+            AddTool(
+                "system.health",
+                _ => HealthReport(),
+                reads: ReadsAuthoritative,
+                stability: "beta");
             AddTool(
                 "system.capabilities",
                 CapabilityCatalog,
@@ -195,6 +206,19 @@ namespace Kodaxa.RoboVision.Editor
                         ["revision"] = Revision,
                         ["bridge"] = Bridge,
                         ["world_incarnation"] = WorldIncarnation,
+                        // Which universe the state in a response came from. Play
+                        // mode is not a view of the authored scene, and a client
+                        // driving both editors reads this field in both rather
+                        // than inferring it from which host answered.
+                        ["state_domain"] = StateDomain,
+                        // The convention this world is authored in, published so
+                        // an external agent can pin the value it is *required* to
+                        // pin. Unity enforced this contract internally while
+                        // publishing nothing, which left a strict autonomous
+                        // invocation constructible only by a caller that could
+                        // reach into the package for the constant.
+                        ["coordinate_contract"] = RoboVisionRecipe.CoordinateContract(),
+                        ["units"] = RoboVisionRecipe.Units(),
                         ["journal"] = Journal.State(),
                         ["capability_count"] = capabilities.Count,
                         ["capabilities"] = capabilities,
@@ -226,10 +250,15 @@ namespace Kodaxa.RoboVision.Editor
                             // refused.
                             ["state"] = Transactions.ActiveState(),
                             ["your_client"] = CurrentClientId,
-                            ["ownership"] = "a transaction belongs to the connection that opened it; "
-                                + "mutations from other connections are refused with TRANSACTION_FOREIGN "
-                                + "while it is active. If the owner disconnects the transaction is marked "
-                                + "orphaned and any client may commit or roll it back.",
+                            // Structured facts rather than policy prose. The
+                            // paragraph that used to sit here still said any
+                            // client may finish an orphan, which stopped being
+                            // true when adoption started requiring the recovery
+                            // credential — a sentence drifting out of step with
+                            // the code enforcing it is exactly what two
+                            // machine-readable statements cannot do.
+                            ["ownership"] = "connection",
+                            ["orphan_requires_adoption"] = true,
                             ["external_change_protection"] = true,
                             ["failed_operation_recovery"] = true
                         }

@@ -73,6 +73,7 @@ before the run is unchanged after it.
 | gate0, semantic query, document lifecycle, add-on lifecycle, journal | Blender 5.1.2, Windows, headless | pass, current checkpoint |
 | soak 500 cycles | Blender 5.1.2, Windows | pass, mean 47.8ms, max 55.0ms |
 | soak 250 cycles | Blender 5.2.1 LTS, Linux CI | pass, mean 35.1ms, max 40.9ms |
+| health, cross-editor public flow | Blender 5.1.2, Windows, headless | pass |
 
 The Gate 1 baseline fingerprint is identical on both platforms and versions.
 
@@ -236,6 +237,42 @@ the MCP path. Background Blender cannot verify a rollback at all — its own gat
 asserts that — so the rollback here proves the ownership boundary instead, by
 failing `UNDO_UNAVAILABLE` rather than `TRANSACTION_ORPHANED`. The restoration
 claim belongs to an interactive run.
+
+### Readiness, and the pins an external agent has to discover
+
+`tests/blender/health.py` (headless) covers what `system.health` must keep
+apart. The value of a readiness report is entirely in the independence of its
+answers, so each case moves one thing and checks the others did not move with
+it: an uncertain journal — produced by moving the frame under a missed
+notification, which is a change the host can see and genuinely cannot attribute
+— degrades `incremental_changes` while `semantic_observation` stays ready and
+`mutate` is untouched; a transaction owned by another connection blocks mutation
+with `transaction_active_foreign` and leaves observation alone, and the same
+connection's own `object.create` is refused `TRANSACTION_FOREIGN`, so health and
+dispatch cannot disagree; an orphan blocks a new correction and asks to be
+adopted without the host ever suggesting the caller could do the adopting.
+Background Blender reports `visual_observation` blocked for `background_mode`
+beside a ready `mutate`, and the mutation health promised is then performed. It
+also blocks `begin_correction` for `verified_rollback_unavailable`, and the gate
+proves that is the right mechanism to name: the `transaction.begin` still
+succeeds and the rollback that would reject a candidate fails
+`UNDO_UNAVAILABLE`. A correction is transactional, so an editor missing the
+reject branch has no correction capability rather than a weakened one — while
+`mutate` and `semantic_verify` stay ready beside it. Three consecutive health
+calls move neither the revision, the fingerprint, the object count nor the
+journal epoch.
+
+`tests/blender/public_flow_gate.py` (headless, over a real socket) runs
+`tests/public_flow.py` — the same module Unity runs, which knows nothing about
+either editor — through the public `HostSession`. It proves an external agent can
+read the world incarnation, coordinate contract, units, state domain, authored
+revision and journal cursor out of `system.hello`, take an authoritative
+observation, and issue a fully pinned autonomous begin and mutation without
+importing a host constant; that a guessed coordinate contract is refused
+`COORDINATE_CONTRACT_CHANGED`, which is what makes reading the real one worth
+anything; that ownership is published as `ownership = connection` and
+`orphan_requires_adoption = true` rather than as prose; and that health runs on
+the session's existing connection rather than opening a second one.
 
 ### Acknowledgement loss
 

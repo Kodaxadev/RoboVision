@@ -1,8 +1,11 @@
 # Cross-editor state contract (proposed)
 
-Status: **proposed, not implemented.** Nothing here is claimed as working. Each
-section states the error cases it owes, because a contract that only describes
-the happy path is not a contract.
+Status: **mostly proposed; some sections implemented and marked as such.** The
+document began as a design with nothing behind it and that is no longer true, so
+the blanket disclaimer would now be the false statement. Anything not carrying an
+explicit *Implemented* note is still proposed and is not claimed as working. Each
+section states the error cases it owes, because a contract that only describes the
+happy path is not a contract.
 
 The purpose is narrow: let an agent work for hours, across more than one editor,
 without silently drifting out of sync, editing the wrong element, duplicating a
@@ -134,13 +137,72 @@ tell whether its correction landed.
 
 ## 9. Health is not a ping
 
-A responding socket proves the socket responds. Health reports each of these
-separately, and anything unknown is reported as unknown rather than healthy:
+**Implemented** on both hosts as `system.health`, bounded to what an Artist Loop
+has to decide before it acts. A responding socket proves the socket responds, and
+a single red/green light would destroy exactly the distinctions the rest of this
+document exists to preserve.
 
-transport listening · host attached · workspace and document identity · executor
-alive · queue draining · scene readable · mutation path healthy · perception path
-healthy · transaction subsystem healthy (including any orphan) · runtime
-incarnation current · journal epoch and certainty.
+**One vocabulary,** five values, because `unknown` and `not_applicable` are
+different claims: `ready`, `degraded`, `blocked`, `unknown`, `not_applicable`.
+Anything not proven is `unknown`, never healthy. An overall `status` summarises
+`ready_for` and nothing else; no caller may need to infer a subsystem from it.
+
+**One authoritative act.** Health is an authoritative read, so dispatch resyncs
+before it runs. Its successful execution proves the request reached the host, the
+editor-thread executor ran it, and the host could form a response; its resync
+proves the editing context is readable and that the world and revision it reports
+belong to the state just read. It performs no mutation, no capture, no undo and
+no probe write — health observes, it does not perturb.
+
+**`ready_for`** answers five questions independently, each with a machine-readable
+basis or reason: `semantic_observation`, `visual_observation`, `begin_correction`,
+`mutate`, `semantic_verify`, `visual_verify`, `finish_or_recover`. `mutate` says
+the path is presently eligible to be attempted under the operation's own contract;
+it never predicts that a particular call will succeed. `finish_or_recover` reports
+the transaction situation — `none`, `active_owned_by_this_connection`,
+`active_foreign`, `orphaned_adoption_required`, `contaminated`,
+`recovery_uncertain` — and never grants authority over it.
+
+**A capability is `ready` only when the mechanisms its own contract requires are
+presently available,** decided per capability and never inferred from an overall
+status. A correction is transactional by definition — observe, propose a
+candidate, observe again, then accept and commit *or* reject and roll back with
+proof — so an editor that cannot prove a rollback does not have a degraded
+correction capability, it has one whose reject branch does not exist:
+`begin_correction` is `blocked` with reason `verified_rollback_unavailable`, and
+the entry carries `verified_rollback: false` as a fact. `transaction.begin` would
+still succeed there and its checkpoint would be real; what is missing is the
+branch that makes proposing a candidate safe. Nothing else in the report moves
+with it — ordinary `mutate` eligibility, `semantic_observation` and
+`semantic_verify` are all still reported on their own terms.
+
+**Independent failures stay independent.** An uncertain journal degrades
+`incremental_changes` and leaves `semantic_observation` ready, because the remedy
+is an authoritative observation rather than despair. A background Blender or a
+batch Unity blocks `visual_observation` and can still author. Background Blender
+additionally blocks `begin_correction` for want of a provable rollback while
+`mutate` stays ready — those are two capabilities with two contracts, and a batch
+Unity, which can prove a rollback headlessly, blocks the first and not the second.
+Unity play mode blocks `mutate` while reads answer and the executor is
+demonstrably alive. An orphan blocks a new correction while observation is
+unaffected.
+
+**Subsystems stay thin:** journal certainty/epoch/cursor and whether incremental
+polling is usable; the transaction state machine, reused rather than
+reinterpreted; the operation ledger's world, whether records were resumed from a
+*verified* world, an interrupted-invocation count and the last ledger I/O failure;
+and an executor claim that says only what this call proved. Where a host keeps no
+queue metric it reports `not_applicable` rather than manufacturing one. There is
+no uptime, no telemetry, no dashboard and no alerting here, and there will not be.
+
+**The host never claims the caller holds a recovery credential.** It cannot know
+that. The Python `HostSession` adds `recoverable_by_this_session` in a separate
+`session` block, because the library genuinely knows it; the credential itself is
+never exposed on any path.
+
+**Owed errors.** Health answers rather than failing wherever it can; a scene it
+cannot read fails the call, which is itself the honest report that the editing
+context is unreadable.
 
 ## 10. Perception is two systems
 
