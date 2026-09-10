@@ -232,6 +232,27 @@ asserts that — so the rollback here proves the ownership boundary instead, by
 failing `UNDO_UNAVAILABLE` rather than `TRANSACTION_ORPHANED`. The restoration
 claim belongs to an interactive run.
 
+### Acknowledgement loss
+
+`tests/blender/ack_loss.py` (headless) covers the window every recovery
+guarantee is actually about: the host has applied a request and its response
+never reaches the caller. Reaching that state by editing private state
+afterwards would assert the edit rather than the behaviour, so the transport has
+two deliberate test seams — drop a response after the handler ran, or drop a
+request before it does — and the gate drives the public session helpers across
+both.
+
+Four losses, four questions. A **lost begin** must not destroy the credential or
+its association: the secret and its correlation handle are persisted before the
+request goes out, the orphan reports the handle, and the reconnecting session
+binds and adopts. A **lost adoption that applied** must leave the client knowing
+its replacement is current — the host's recovery generation reads 1, the client
+promotes, and the re-adoption succeeds. A **lost adoption that never applied**
+must leave the original current — the generation reads 0, nothing is promoted,
+and the original still works. A **lost terminal reply** must be resolvable by
+reading: `transaction.status` returns the finished record with its reason, the
+object count is asserted unchanged, and the credential is released.
+
 ### Transaction ownership
 
 `tests/blender/transaction_ownership.py` (headless) is the first Blender gate

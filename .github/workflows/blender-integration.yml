@@ -118,6 +118,17 @@ jobs:
             --python-exit-code 1 \
             --python tests/blender/transaction_ownership.py
 
+      - name: Run RoboVision acknowledgement loss gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/blender-ack-loss
+          "${BLENDER_DIR}/blender" \
+            --background \
+            --factory-startup \
+            --python-exit-code 1 \
+            --python tests/blender/ack_loss.py
+
       - name: Run RoboVision MCP session gate
         shell: bash
         run: |

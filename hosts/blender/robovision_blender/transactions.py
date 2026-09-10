@@ -43,6 +43,17 @@ class Transaction:
     begin_snapshot: dict[str, Any]
     owner_client: int
     recovery: RecoveryToken
+    # A client-chosen, non-secret handle for the request that opened this
+    # transaction. It grants nothing: it exists so that a client whose begin
+    # acknowledgement was lost can recognise which transaction its precommitted
+    # secret belongs to, without the host id ever becoming client-authoritative.
+    handle: str | None = None
+    # Which credential is current, counted rather than named. After an adoption
+    # whose reply was lost, this is what tells a client whether the rotation
+    # happened — an ambiguous acknowledgement becomes a deterministic lookup.
+    # Non-secret by construction: it identifies no verifier and authenticates
+    # nothing.
+    recovery_generation: int = 0
     state: str = ACTIVE
     reason: str | None = None
     external_change_fingerprint: str | None = None
@@ -82,7 +93,10 @@ class TransactionManager:
 
     def _finish(self, tx: Transaction, state: str, reason: str | None,
                 evidence: dict[str, Any] | None = None) -> None:
-        record: dict[str, Any] = {"transaction": tx.id, "state": state, "world_incarnation": tx.world}
+        record: dict[str, Any] = {"transaction": tx.id, "state": state,
+                                  "world_incarnation": tx.world,
+                                  "recovery_handle": tx.handle,
+                                  "recovery_generation": tx.recovery_generation}
         if reason is not None:
             record["reason"] = reason
         # Terminal state instead of replaying a stored result is fine, but only
@@ -117,6 +131,8 @@ class TransactionManager:
             "begin_fingerprint": tx.begin_snapshot["fingerprint"],
             "contaminated": tx.external_change_fingerprint is not None,
             "adoption_required": tx.state == ORPHANED,
+            "recovery_handle": tx.handle,
+            "recovery_generation": tx.recovery_generation,
             "verified_rollback_available": not bpy.app.background,
             **({"reason": tx.reason} if tx.reason else {}),
         }
@@ -125,7 +141,8 @@ class TransactionManager:
 
     def begin(self, label: str, *, world: str, revision: int, owner_client: int,
               before: dict[str, Any] | None = None,
-              recovery_verifier: str | None = None) -> dict[str, Any]:
+              recovery_verifier: str | None = None,
+              recovery_handle: str | None = None) -> dict[str, Any]:
         if self.active is not None:
             raise HostError("TRANSACTION_ACTIVE", "a transaction is already active",
                             data={"active": self.state()})
@@ -157,6 +174,7 @@ class TransactionManager:
             begin_snapshot=before,
             owner_client=owner_client,
             recovery=token,
+            handle=str(recovery_handle) if recovery_handle else None,
         )
         response = {
             **self.state(),
@@ -219,6 +237,9 @@ class TransactionManager:
             tx.recovery = RecoveryToken.precommit(next_verifier)
         else:
             tx.recovery, rotated = RecoveryToken.mint()
+        # Counted after the swap, so the number a client reads back is the
+        # generation of the credential that is now current.
+        tx.recovery_generation += 1
         response = {
             **self.state(),
             "adopted": True,
@@ -341,6 +362,27 @@ class TransactionManager:
         )
 
     # ------------------------------------------------------------ authority
+
+    def status(self, tx_id: str | None) -> dict[str, Any]:
+        """What became of a transaction, without touching it.
+
+        A caller whose commit acknowledgement was lost needs to learn the outcome
+        without repeating the operation to discover it. Reading is the whole
+        point: this never opens, finishes or mutates anything.
+        """
+        active = self.state()
+        if tx_id is None:
+            return {"active": active, "finished": None}
+        if active is not None and active["transaction"] == tx_id:
+            return {"active": active, "finished": None}
+        record = self.finished.get(tx_id)
+        if record is None:
+            raise HostError(
+                "NOT_FOUND",
+                "no open or recently finished transaction has that id",
+                data={"transaction": tx_id},
+            )
+        return {"active": None, "finished": dict(record)}
 
     def _locate(self, tx_id: str | None) -> Transaction:
         if not tx_id:

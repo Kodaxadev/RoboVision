@@ -81,6 +81,47 @@ Secrets appear in no response, no diagnostic, no journal event, no operation
 ledger record and no capability description. The gate asserts that no structured
 output it collected contains one.
 
+### 4.2.1 A lost acknowledgement must not cost authority
+
+Precommitting the secret is necessary and was not sufficient. Two windows made
+the guarantee untrue, both measured through the transport rather than inferred:
+
+**The begin acknowledgement.** The secret was stored under the host-issued
+transaction id, which only arrives in the reply. Lose the reply and the secret
+was gone, leaving an orphan nobody could ever reclaim. The client now generates a
+non-secret **correlation handle** alongside the secret and persists both *before*
+sending; the host records the handle as non-authoritative metadata and reports it
+on the transaction, so a reconnecting session recognises which transaction its
+surviving secret belongs to. The handle grants nothing and the host id never
+becomes client-authoritative.
+
+**The adoption acknowledgement.** Adoption rotates, so a lost reply left the
+client presenting the old secret while the host expected the new one — and no way
+to tell whether the rotation had happened. The host now counts a non-secret
+**recovery generation**, incremented when it installs a new verifier and reported
+in transaction state. The client keeps both credentials and reads the counter:
+unchanged means the rotation never happened and the original is still current;
+advanced means it did and the replacement — already in hand — is. An ambiguous
+acknowledgement becomes a deterministic lookup rather than a guess.
+
+Neither mechanism authenticates. The handle identifies a request, the generation
+identifies which credential is current, and only the secret proves authority.
+
+**Terminal replies** are resolved by reading. `transaction.status` reports the
+open transaction or the finished record with its proof, so a caller whose commit
+acknowledgement was lost learns the outcome instead of re-sending the operation
+to discover it.
+
+All credential transitions run under the session's lock, so no second thread can
+observe a half-transition: create-pending-then-send-then-bind for begin, and
+create-next-then-send-then-promote for adoption, are each one serialized step.
+
+**Scope, honestly.** The credential store survives socket loss, not the death of
+the session process itself. A process death may therefore leave an orphan that
+can only be discarded. That is acceptable for this milestone and is not hidden: a
+durable credential facility is future work, and no OS keychain or encrypted store
+is introduced now.
+
 ### 4.3 One logical controller per host session
 
 The MCP adapter keeps one connection per host, which is correct for a single

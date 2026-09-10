@@ -34,6 +34,19 @@ class NonBlockingJsonServer:
         self.clients: dict[int, _Client] = {}
         self.on_client_closed = on_client_closed
         self._next_client_id = 0
+        # A test seam for one window that cannot otherwise be reached: after the
+        # host has applied a request and before its response is delivered. Every
+        # acknowledgement-loss guarantee is about exactly that gap, and a test
+        # that reached it by editing private state afterwards would be asserting
+        # its own edit rather than the host's behaviour. Called with the request
+        # and the response; returning False drops the response and closes the
+        # connection. Always None in a shipped host.
+        self.fault_after_dispatch = None
+        # The other half of the same seam: a request that died in flight and was
+        # never applied. Telling "applied but unacknowledged" apart from "never
+        # applied" is exactly what the credential generation counter exists for,
+        # so both sides of that distinction have to be reachable deterministically.
+        self.fault_before_dispatch = None
 
     @property
     def running(self) -> bool:
@@ -114,7 +127,17 @@ class NonBlockingJsonServer:
                 request = json.loads(raw.decode("utf-8"))
                 if not isinstance(request, dict):
                     raise ValueError("request must be a JSON object")
+                if self.fault_before_dispatch is not None \
+                        and not self.fault_before_dispatch(request):
+                    # Never reached the host.
+                    self._close(client)
+                    return processed
                 response = dispatch(request, client.id)
+                if self.fault_after_dispatch is not None \
+                        and not self.fault_after_dispatch(request, response):
+                    # Applied by the host, never seen by the caller.
+                    self._close(client)
+                    return processed
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
                 response = self._transport_error("INVALID_REQUEST", str(exc))
             self._queue(client, response)

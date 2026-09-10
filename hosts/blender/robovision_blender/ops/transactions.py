@@ -7,7 +7,7 @@ host's identity for a transaction.
 """
 from __future__ import annotations
 
-from ..registry import HostError
+from ..registry import NOTIFIED, HostError
 
 
 def begin(params, runtime):
@@ -24,6 +24,7 @@ def begin(params, runtime):
         owner_client=runtime.current_client_id,
         before=runtime.current_snapshot(),
         recovery_verifier=params.get("recovery_verifier"),
+        recovery_handle=params.get("recovery_handle"),
     )
 
 
@@ -63,6 +64,11 @@ def discard(params, runtime):
     )
 
 
+def status(params, runtime):
+    """Read what became of a transaction. Never repeats its side effect."""
+    return runtime.transactions.status(params.get("transaction"))
+
+
 def register(registry) -> None:
     # All of these are side-effecting although only rollback moves the scene:
     # "does not advance the revision" is not the same claim as "safe to execute
@@ -91,3 +97,7 @@ def register(registry) -> None:
                  duplicate_policy="terminal_state")
     registry.add("transaction.discard", discard, stability="alpha", side_effecting=True,
                  duplicate_policy="terminal_state")
+    # Read-only, and deliberately cheap: resolving a lost acknowledgement must
+    # not cost an authoritative scene read, and must never be the thing that
+    # changes what it is reporting on.
+    registry.add("transaction.status", status, reads=NOTIFIED, stability="alpha")

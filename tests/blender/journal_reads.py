@@ -32,6 +32,11 @@ NOT_AUTHORITATIVE = {
     # they cannot pair current geometry with a stale revision.
     "system.ping": "notified",
     "system.hello": "notified",
+    # Reports what became of a transaction, which is host state rather than
+    # scene state. Cheap on purpose: resolving a lost acknowledgement must not
+    # cost an authoritative read, and must never be the thing that changes what
+    # it is reporting on.
+    "transaction.status": "notified",
     # Protocol metadata: the catalog does not depend on the scene at all.
     "system.capabilities": "independent",
     "system.method": "independent",
