@@ -1,6 +1,6 @@
 # Runs against `rvbench:correction-transfer/v2`
 
-Two contaminated preflights, then Participant 1 — the first clean run.
+Two contaminated preflights, then two clean participants.
 
 Two runs happened before the first genuinely independent participant. **Neither
 is the independent result**, and neither is reported as one. Both clients had
@@ -154,9 +154,15 @@ The participant read the null resolution as a property of the metric rather than
 as a consequence of its own identifier. This is **cause (1): wrong metric
 names** — not a misunderstood audit, and not a serialization or interface bug.
 
-The evaluator did say so. `target_metric_missing` with both `before` and `after`
-false is exactly "no metric of that name exists in either measurement". The
-information was available and was outweighed by the null.
+~~The evaluator did say so … The information was available and was outweighed
+by the null.~~ **Retracted — that was wrong.** The evaluator did compute
+`target_metric_missing`, but only into the trajectory on disk. `submit_correction`
+returned the decision, `targets_achieved` and the epsilon audit, and **never
+`reject_causes` or `indeterminate_causes`**. What this participant actually saw
+was `decision: indeterminate`, an empty `targets_achieved`, and an audit reading
+`metric_resolution: null`. Its conclusion was a reasonable inference from the only
+evidence the harness returned. See *The harness withheld the rejection reasons*,
+below.
 
 ### A second, separate failure worth more attention
 
@@ -277,17 +283,147 @@ model with source access does not automatically extract everything the
 measurements contain, so v2 still carries a genuine reasoning burden.
 
 
-## Three runs, one pattern
+## Participant 2 — Nemotron 3 Ultra Free, clean and isolated
 
-| | access | attempts | accepted | faults fixed |
+Run identity `nemotron-3-ultra-clean-01`. Unchanged v2, same shim, same prompt,
+same 8-attempt budget, no knowledge of Participant 1.
+
+**8 attempts / 0 accepted / 8 rejected / 8 verified rollbacks /
+`budget_exhausted`.** Restore verified against the frozen signature and Q0. 214
+correction-execution calls, 91 observation calls, 305 total, 23.83s. No manual
+interventions. **Retained state is exactly A0** — every rollback restored, and the
+final vector is identical to Q0 in every component.
+
+That answers the question that mattered most: every configuration the participant
+reported as "consistently fixable" existed only inside a candidate the vector gate
+refused. The asset never carried any of it.
+
+### What it got right
+
+It **used the canonical names from its first attempt** —
+`reference.macro.excess_fraction`, `reference.macro.deficit_fraction`,
+`pattern.spacing_max_error`, each with the correct kind. Participant 1's
+reference-namespace barrier did not stop it. So that barrier is real but not
+universal.
+
+And **its first attempt chose the minimum-change radius.** A0 places Bracket_0 at
+r = 0.245804 and the other four at 0.204486 (from the public manifest's
+`normalized_a0`; no sealed material was read). Attempt 1 moved Bracket_0 to
+0.20449 — the four-member consensus — and Bracket_1 back to 72°. That is the
+single-outlier repair, not the outward one. It took pattern spacing from 4.900687°
+to 0.000073° and front excess from 0.139025 to 0.124274.
+
+### Why that attempt failed, and what happened next
+
+It bundled three objectives into one correction and declared an epsilon of 0.03 on
+both reference targets:
+
+| target | achieved | required |
+| --- | --- | --- |
+| `pattern.spacing_max_error` | 4.900614 | 1.0 ✓ |
+| `ref:front` `reference.macro.excess_fraction` | 0.014751 | 0.03 ✗ |
+| `ref:side` `reference.macro.deficit_fraction` | 0.001539 | 0.03 ✗ |
+
+The geometry was right and improved every metric it touched. The attempt was
+rejected because the participant promised more than one correct edit could
+deliver, and vector acceptance does not give partial credit.
+
+It then kept the correct radius through attempts 2–3 but added a 90° rotation of
+all five brackets, which regressed its own declared protections (front deficit
+0.017 → 0.099, side excess 0.182 → 0.260). From attempt 4 it abandoned 0.2045 and
+moved all five **outward** to 0.246, thinned the mast and moved the counterweight.
+That produced the front excess of 0.028 its note reports — while front deficit went
+0.017 → 0.181 and side deficit 0.105 → 0.168. Excess had been converted into
+deficit. Its own protections caught it every time.
+
+So the provisional reading — that it failed to prefer the minimum-change
+explanation — is **not supported**. It preferred it first, then abandoned it after
+rejections that the correct radius had not caused. The failure is **credit
+assignment across a bundled correction under vector rejection**: which edit in a
+rejected bundle was responsible.
+
+### Why it could not assign that credit
+
+The harness withheld the answer. It saw `decision: reject` together with a
+`targets_achieved` list that **included the pattern target it had met**. From its
+side, attempt 1 met its main objective and was rejected for no stated reason. The
+field it could see reported transient success; the field that explained the
+rejection was never sent. Its "consistently fixable" is an accurate reading of
+`targets_achieved`, not a hallucination.
+
+It also listed `geometry.manifold` as a protected metric **in all eight attempts**
+— the same invariant-as-metric confusion Participant 1 made on attempt 1. It never
+learned otherwise, because the resulting `protected_metric_missing` was an
+indeterminate cause, indeterminate causes were never returned, and every attempt
+also carried a reject cause that outranked it.
+
+Its stop note is preserved verbatim, including the belief that the object set
+"cannot provide the required side geometry". That is a participant belief. The
+source-assisted preflight reported the existing objects sufficient; that report
+is the operator's and is not independently verified here.
+
+## The harness withheld the rejection reasons
+
+This is a defect in the benchmark harness, in code written for it at `a4dfccc`,
+and it shaped **both** clean results.
+
+`CHALLENGE.md` promises that after a rejection *"you try again with the evidence
+from the failure"*. `runner.attempt` returns `decision`, `outcome`, `restored`,
+`targets_achieved`, `epsilon_audit` and a fresh packet. It does not return
+`reject_causes` or `indeterminate_causes` — the only fields that say what failed.
+The shim passes that dict through unchanged. The contract promised the evidence
+from the failure and the harness sent the evidence of partial success instead.
+
+Consequences, now that it is visible:
+
+- **Participant 1** could not see `target_metric_missing`, so it could not learn
+  that `reference.excess_fraction` did not exist; a null resolution was the only
+  signal and it read it the natural way. The earlier claim that the information
+  was available to it is retracted above.
+- **Participant 2** could not see which target fell short, which protection
+  regressed, or that `geometry.manifold` was never a metric — so it could not
+  separate a correct edit from the incorrect ones bundled with it.
+
+Both runs remain valid **as runs of v2 as built**, and they are comparable with
+each other because both were blinded identically. They are not measurements of
+what either model can do when told why it failed. v2 is not modified: no further
+participant runs against it, and the fix belongs to v3.
+
+**This moves to the top of the v3 list.** Returning the causes is not a legibility
+improvement like the others; it is the precondition for any of them to matter. A
+self-describing error message is worthless if the harness never delivers it.
+
+## Four runs, one pattern
+
+| | access | attempts | accepted | retained faults fixed |
 | --- | --- | --- | --- | --- |
-| Preflight A — Muse | source, offline analytical | not budget-comparable | 4 predicted | 4 |
+| Preflight A — Muse | source, offline analytical | not budget-comparable | 4 predicted | 4 (operator-reported) |
 | Preflight B — Spark | source, live harness | 4 | 1 | 1 |
 | Participant 1 — MiMo | **clean, isolated** | 6 | 1 | 1 |
+| Participant 2 — Nemotron | **clean, isolated** | 8 | 0 | 0 |
 
-All three independently localised the `Bracket_1` angular fault first. That is
-now three reasoning clients, one of them with no access to anything, agreeing
-that the radial-pattern discrepancy is legible from the evidence alone.
+All four localised the `Bracket_1` angular fault — Participant 2 in its first
+attempt alongside the correct `Bracket_0` radius. That is four reasoning clients,
+two with no access to anything, agreeing that the radial-pattern discrepancy is
+legible from the evidence alone.
+
+The two clean participants failed at **different layers**:
+
+| layer | Participant 1 | Participant 2 |
+| --- | --- | --- |
+| detect and correct the pattern angle | yes | yes, attempt 1 |
+| pick the minimum-change radius | not attempted | **yes, attempt 1** — then abandoned |
+| name the canonical reference metrics | no | **yes** |
+| separate invariants from metrics | no (attempt 1), then yes | **no, all 8 attempts** |
+| keep one objective per correction | mostly | no — bundled throughout |
+| assign a rejection to the right edit | not tested | no — and was never told the causes |
+| infer a 3D correction from a silhouette deficit | not established | no |
+| safety and exact rollback | yes | yes, 8 of 8 |
+| stopped | autonomously | budget exhausted |
+
+Participant 2's zero is not a worse result than Participant 1's one in any useful
+sense. It found the right repair first and could not keep it. The harness is the
+reason it could not tell that the repair was the part that worked.
 
 The divergence after that is the more useful half. Unlimited offline evaluation
 solved everything; both live runs solved one.
@@ -343,6 +479,24 @@ The A/B question is worth more than the fix:
 Either answer is worth more than the repair.
 
 ### The v3 interface changes, recorded and not yet built
+
+0. **Return the rejection reasons.** `submit_correction` must return
+   `reject_causes` and `indeterminate_causes`, and indeterminate causes must not be
+   hidden behind a reject cause that outranks them. `targets_achieved` in a
+   rejected attempt must say plainly that the achievement was not retained. This
+   is the precondition for every item below: a self-describing error is worthless
+   if the harness never sends it.
+
+   Participant 2 adds two items that follow from it:
+
+   - **Per-operation attribution in a rejected bundle.** When a multi-edit
+     correction is rejected, the participant cannot tell which edit caused it.
+     Per-operation Q1 deltas, or a recommendation to submit one objective per
+     correction, would have let it keep the correct radius.
+   - **Image-space discrepancy attributed back to 3D.** A sector deficit says
+     where the silhouette is wrong, not which object projects nearest that
+     region, which direction of movement would cover it, or where depth leaves
+     it ambiguous.
 
 1. **One canonical metric namespace everywhere.** The discrepancy packet should
    carry the evaluator's exact identifier beside the friendly field, so an agent
