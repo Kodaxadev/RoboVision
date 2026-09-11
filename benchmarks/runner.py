@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT))
 
 from benchmarks.signature import collect, differences, signature  # noqa: E402
 from robovision.artist_loop import Brief, advisory_ranking, measure, packet  # noqa: E402
+from benchmarks.addresses import addresses_enabled, annotate_addresses  # noqa: E402
 from benchmarks.report import finalize, vector  # noqa: E402
 from benchmarks.results import (  # noqa: E402,F401 - re-exported
     FAILURE_FIELDS, LIFECYCLE_FILES, expected_state, participant_result)
@@ -211,6 +212,10 @@ class Runner:
         }
         # Recorded, never fed back into the decision.
         evidence["advisory_ranking"] = advisory_ranking(evidence)
+        # v3b: each metric shown also carries the exact {metric, kind} a correction
+        # must name. Gated per benchmark, so v2 and v3a packets stay as built.
+        if addresses_enabled(self.manifest):
+            annotate_addresses(evidence, bundle)
         # One health call, one scene.describe inside measure, one call per
         # certificate. Counted so the report can separate looking from acting.
         self.spend_observation(2 + len(bundle))

@@ -1003,3 +1003,75 @@ make a typed edit, verify, commit, inspect the residual — eight times in a row
 RoboVision requires it — Muse shows it does not — but to measure how far closing an
 unnecessary legibility gap raises MiMo and Nemotron toward what Muse already did.
 
+## v3b — metric-legibility ablation
+
+Benchmark `rvbench:correction-transfer/v3b-legibility`, package
+`benchmarks/correction-transfer-v3b-legibility/`, derived from frozen v3a.
+
+**The one change.** Each section of the discrepancy packet gains an `addresses` map
+from friendly field to the exact `{metric, kind}` pair a correction's `targets` or
+`protected` entry takes — so what a participant reads is what it can submit.
+
+| section | friendly field | address |
+| --- | --- | --- |
+| reference | `silhouette_iou`, `excess_fraction`, `deficit_fraction`, `aspect_error` | `reference.macro.*` |
+| reference | `contour_mean_distance` | `reference.contour.mean_distance` |
+| reference | `worst_sector_magnitude` | `reference.contour.worst_sector_net` |
+| patterns | `max_spacing_error` | `pattern.spacing_max_error` |
+| patterns | `max_angular_deviation`, `dimension_cv` | `pattern.*` |
+| dimensions | `size[0..2]`, `largest` | `spatial.dimension_x/y/z`, `spatial.largest_dimension` |
+| coverage | `observed_fraction` | `coverage.observed_fraction` |
+
+Three rules keep it to one variable:
+
+- **additive only** — no existing value, key or type changes;
+- **only `{metric, kind}`** — no direction, resolution or guidance prose;
+- **provably copyable** — an address is emitted only if the evaluator's own lookup
+  resolves it to the exact value displayed beside it. Descriptive detail (sectors,
+  region geometry, counts from invariant evidence, gap indices, labels) is not a
+  certificate metric and is not addressed.
+
+**Unchanged from v3a:** the asset, faults, references, attempt budget, evaluator,
+correction semantics, tool surface and every tool description, the prompt,
+`CHALLENGE.md` (byte-identical, still headed v2), failure feedback, invariant
+presentation, missing-metric wording, the epsilon rule and protection behaviour.
+The normalized A0 signature, Q0 vector, hidden commitments and participant-file
+digests were checked identical to v3a's. As before, the participant-facing manifest
+honestly records the change, which is a small disclosed prime.
+
+**Proved live over the real stdio shim.** A v3a packet carries no addresses; a v3b
+packet carries all fourteen. A probe that authors nothing, whose targets and
+protections were copied verbatim from the v3b packet's addresses, resolved every
+one: both targets were measured and refused as `insufficient_target_improvement`,
+with **no `*_metric_missing` cause**. The scene was unchanged. The addresses are
+invisible to the Q0 comparison vector, so restore verification is unaffected.
+
+### Pre-registered measures
+
+Recorded before any v3b participant runs, so they cannot be chosen after seeing the
+results. v3b's question is mechanistic, not only a score:
+
+1. **first resolved attempt** — the attempt at which every declared target and
+   protection first resolves in the evaluator;
+2. **protocol cost** — the total number of `*_metric_missing` causes across the run;
+3. **copying** — whether submitted `{metric, kind}` pairs match packet addresses
+   verbatim;
+4. then, as before: accepted, rejected and indeterminate attempts, the retained
+   vector, and the stop reason.
+
+Compared against each model's own v3a run: MiMo's first attempt whose targets all
+resolved was attempt 3, and Nemotron's never came.
+
+### Order
+
+Fresh MiMo first (`mimo-v2.5-v3b-01`, `D:\RVBench-MiMo-v3b-01`), then fresh Nemotron
+(`nemotron-3-ultra-v3b-01`, `D:\RVBench-Nemotron-v3b-01`) — Nemotron restored only
+after MiMo is finalized. A Muse v3b run is deferred: Muse found the canonical names
+itself in v3a, so it adds least to v3b's question, and is worth running afterwards
+only as a regression check on whether the more explicit packet gets in the way of a
+model that already interrogates the truth tools.
+
+After v3b this fixture is retired as the basic correction-transfer benchmark. Muse
+reached front IoU 0.998 on it with budget left; the next benchmark should be
+designed for interacting faults, ambiguity, attribution and planning.
+
