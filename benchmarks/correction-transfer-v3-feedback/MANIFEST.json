@@ -1,0 +1,582 @@
+{
+  "benchmark": "rvbench:correction-transfer/v3-feedback",
+  "status": {
+    "label": "v3a failure-feedback ablation",
+    "note": "identical to rvbench:correction-transfer/v2 in asset, faults, references, budget, tools and participant files; the only functional difference is that submit_correction returns the evaluator's failure causes"
+  },
+  "derived_from": {
+    "benchmark": "rvbench:correction-transfer/v2",
+    "manifest": "sha256:0c85aa7ff6012eeac6cf790b13ad20db823d640bf9e0698cdb371e73b75d304c"
+  },
+  "harness": {
+    "return_failure_causes": true
+  },
+  "harness_change_from_v2": "submit_correction returns an `evaluation` block containing the evaluator's reject_causes, indeterminate_causes, targets_achieved and invariants_checked, as already computed. Indeterminate causes are returned even when a reject cause decided the outcome.",
+  "unchanged_from_v2": [
+    "CHALLENGE.md, byte-identical including its heading",
+    "brief.json and both reference images, byte-identical",
+    "the tool surface and every tool description",
+    "the asset, faults, references, attempt budget and DAT policy",
+    "the metric namespace, invariant/metric separation, error wording and epsilon rule \u2014 deferred to later versions so each effect is measured separately"
+  ],
+  "private_material": "correction-transfer-v2",
+  "budget": {
+    "max_attempts": 8,
+    "attempt_counts": "accepted, rejected and indeterminate attempts all count",
+    "observation_budgeted": false,
+    "observation_policy": "observation is unbudgeted; participant observation calls are counted and reported separately from correction execution calls, never merged into one efficiency figure",
+    "epsilon_policy": "the participant declares an epsilon per target; the harness audits it against the metric's own resolution and records any improvement below that resolution as unproven",
+    "tolerance_policy": "protected metrics use the tolerances the participant declares; the harness does not relax them on rejection"
+  },
+  "disclosed_to_participant": [
+    "the written asset brief, including the declared overall envelope and the kinds of fault that are possible",
+    "the two reference silhouettes and the frame each was captured in",
+    "the restored A0, live and freely inspectable through the facade",
+    "every read-only RoboVision operation, and the parameter schema of every operation including mutating ones",
+    "system.health",
+    "authoritative observations and the DAT discrepancy packet",
+    "shaded viewport captures"
+  ],
+  "withheld_from_participant": [
+    "the generator that produced the target asset, the references and the faults",
+    "the seed, the sealed target specification and the applied faults",
+    "the private restore recipe that reconstructs A0",
+    "the asset's internal proportions, beyond the declared overall envelope",
+    "the RoboVision repository source",
+    "any previous participant's trajectory, correction JSON or reasoning"
+  ],
+  "known_limits": [
+    "The references constrain the front and side outlines only. Geometry hidden behind the silhouette in both views is not constrained by them.",
+    "Coverage measures inspectability, not quality. A low observed fraction is not by itself a defect to correct.",
+    "Pattern orientation is measured as agreement between each member's own principal axis and its siblings'. The brackets are authored co-oriented and the brief says so, because a radial array whose members turned with the array would report the design as a deviation.",
+    "reference.absolute_proportion is unmeasured unless a frame is declared; these references carry their capture frame, so the comparison is absolute."
+  ],
+  "required_invariants": [
+    "geometry.manifold",
+    "geometry.no_degenerate_faces",
+    "geometry.normals_consistent",
+    "geometry.no_unintended_open_boundaries",
+    "geometry.no_self_intersection"
+  ],
+  "a0_construction_disclosed": false,
+  "normalized_a0_signature": "rvsig:487546c05243b65a794f27f2505139b0d62dba1dc5a4abdc0286451e0931a402",
+  "normalized_a0": {
+    "schema": 1,
+    "objects": [
+      {
+        "name": "Base",
+        "type": "MESH",
+        "parent": null,
+        "matrix_world": [
+          [
+            0.485133,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.485133,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.059737,
+            -0.400132
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "local_extent": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "world_extent": [
+          0.485133,
+          0.485133,
+          0.059737
+        ],
+        "counts": {
+          "vertices": 8,
+          "edges": 12,
+          "faces": 6
+        },
+        "materials": [],
+        "modifiers": []
+      },
+      {
+        "name": "Bracket_0",
+        "type": "MESH",
+        "parent": null,
+        "matrix_world": [
+          [
+            0.156,
+            0.0,
+            0.0,
+            0.245804
+          ],
+          [
+            0.0,
+            0.0468,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0516,
+            0.051205
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "local_extent": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "world_extent": [
+          0.156,
+          0.0468,
+          0.0516
+        ],
+        "counts": {
+          "vertices": 8,
+          "edges": 12,
+          "faces": 6
+        },
+        "materials": [],
+        "modifiers": []
+      },
+      {
+        "name": "Bracket_1",
+        "type": "MESH",
+        "parent": null,
+        "matrix_world": [
+          [
+            0.156,
+            0.0,
+            0.0,
+            0.046345
+          ],
+          [
+            0.0,
+            0.0468,
+            0.0,
+            0.199165
+          ],
+          [
+            0.0,
+            0.0,
+            0.0516,
+            0.051205
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "local_extent": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "world_extent": [
+          0.156,
+          0.0468,
+          0.0516
+        ],
+        "counts": {
+          "vertices": 8,
+          "edges": 12,
+          "faces": 6
+        },
+        "materials": [],
+        "modifiers": []
+      },
+      {
+        "name": "Bracket_2",
+        "type": "MESH",
+        "parent": null,
+        "matrix_world": [
+          [
+            0.156,
+            0.0,
+            0.0,
+            -0.165433
+          ],
+          [
+            0.0,
+            0.0468,
+            0.0,
+            0.120194
+          ],
+          [
+            0.0,
+            0.0,
+            0.0516,
+            0.051205
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "local_extent": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "world_extent": [
+          0.156,
+          0.0468,
+          0.0516
+        ],
+        "counts": {
+          "vertices": 8,
+          "edges": 12,
+          "faces": 6
+        },
+        "materials": [],
+        "modifiers": []
+      },
+      {
+        "name": "Bracket_3",
+        "type": "MESH",
+        "parent": null,
+        "matrix_world": [
+          [
+            0.156,
+            0.0,
+            0.0,
+            -0.165433
+          ],
+          [
+            0.0,
+            0.0468,
+            0.0,
+            -0.120194
+          ],
+          [
+            0.0,
+            0.0,
+            0.0516,
+            0.051205
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "local_extent": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "world_extent": [
+          0.156,
+          0.0468,
+          0.0516
+        ],
+        "counts": {
+          "vertices": 8,
+          "edges": 12,
+          "faces": 6
+        },
+        "materials": [],
+        "modifiers": []
+      },
+      {
+        "name": "Bracket_4",
+        "type": "MESH",
+        "parent": null,
+        "matrix_world": [
+          [
+            0.156,
+            0.0,
+            0.0,
+            0.06319
+          ],
+          [
+            0.0,
+            0.0468,
+            0.0,
+            -0.194478
+          ],
+          [
+            0.0,
+            0.0,
+            0.0516,
+            0.051205
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "local_extent": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "world_extent": [
+          0.156,
+          0.0468,
+          0.0516
+        ],
+        "counts": {
+          "vertices": 8,
+          "edges": 12,
+          "faces": 6
+        },
+        "materials": [],
+        "modifiers": []
+      },
+      {
+        "name": "Counterweight",
+        "type": "MESH",
+        "parent": null,
+        "matrix_world": [
+          [
+            0.130317,
+            0.0,
+            0.0,
+            0.031
+          ],
+          [
+            0.0,
+            0.130317,
+            0.0,
+            -0.093989
+          ],
+          [
+            0.0,
+            0.0,
+            0.172,
+            -0.250639
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "local_extent": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "world_extent": [
+          0.130317,
+          0.130317,
+          0.172
+        ],
+        "counts": {
+          "vertices": 8,
+          "edges": 12,
+          "faces": 6
+        },
+        "materials": [],
+        "modifiers": []
+      },
+      {
+        "name": "Cowl",
+        "type": "MESH",
+        "parent": null,
+        "matrix_world": [
+          [
+            0.24813,
+            0.0,
+            0.021731,
+            0.0
+          ],
+          [
+            0.0,
+            0.2184,
+            0.0,
+            0.0
+          ],
+          [
+            -0.04624,
+            0.0,
+            0.116609,
+            0.31944
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "local_extent": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "world_extent": [
+          0.269861,
+          0.2184,
+          0.162849
+        ],
+        "counts": {
+          "vertices": 8,
+          "edges": 12,
+          "faces": 6
+        },
+        "materials": [],
+        "modifiers": []
+      },
+      {
+        "name": "Mast",
+        "type": "MESH",
+        "parent": null,
+        "matrix_world": [
+          [
+            0.121218,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.121218,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.630395,
+            -0.055065
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "local_extent": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "world_extent": [
+          0.121218,
+          0.121218,
+          0.630395
+        ],
+        "counts": {
+          "vertices": 8,
+          "edges": 12,
+          "faces": 6
+        },
+        "materials": [],
+        "modifiers": []
+      }
+    ],
+    "combined_extent": [
+      0.567237,
+      0.485133,
+      0.830865
+    ],
+    "excludes": [
+      "object uuids",
+      "world incarnation",
+      "bridge incarnation",
+      "scene revision",
+      "journal identity",
+      "transaction metadata",
+      "idempotency metadata"
+    ]
+  },
+  "q0_vector": {
+    "hard_invariants": "pass",
+    "failing_invariants": [],
+    "dimensions": [
+      0.567236722,
+      0.485132694,
+      0.830865026
+    ],
+    "coverage.observed_fraction": 0.915716,
+    "reference[front].silhouette_iou": 0.862899,
+    "reference[front].excess_fraction": 0.139025,
+    "reference[front].deficit_fraction": 0.017136,
+    "reference[front].aspect_error": 0.05,
+    "reference[front].contour_mean_distance": 0.003347,
+    "reference[front].worst_sector_magnitude": 0.733333,
+    "reference[side].silhouette_iou": 0.757604,
+    "reference[side].excess_fraction": 0.182009,
+    "reference[side].deficit_fraction": 0.104505,
+    "reference[side].aspect_error": 0.0,
+    "reference[side].contour_mean_distance": 0.006017,
+    "reference[side].worst_sector_magnitude": 0.92803,
+    "pattern[brackets].failing": [
+      "pattern.spacing_matches_declared",
+      "pattern.spacing_within_tolerance"
+    ],
+    "pattern[brackets].expected_count": 5,
+    "pattern[brackets].actual_count": 5,
+    "pattern[brackets].max_spacing_error": 4.900687208,
+    "pattern[brackets].worst_gap_index": 0,
+    "pattern[brackets].max_angular_deviation": 0.019782,
+    "pattern[brackets].dimension_cv": 0.0
+  },
+  "reproducibility_claim": "normalized-authoring equivalent, not byte-identical. Blender issues fresh RoboVision identities on every create, so two correct restores differ in every object UUID, world incarnation, revision and journal position. The signature hashes object names, parent names, world transforms, local and world extents, mesh topology counts, materials and modifiers, and excludes all run-specific identity. Every restore is checked against it, and against the frozen Q0 vector, before a participant run may begin.",
+  "hidden_commitments": {
+    "generator": "sha256:e8b1b5203418d78bba6ab8b31dc3f4fb41741e37b6cf6e546815742f45db7c9f",
+    "sealed_seed_and_target": "sha256:72aeb675f66ab44b7c7167699f76c523d3b8065726c8d6f1dd09113997ff967e",
+    "private_restore_specification": "sha256:37a504fa2121084cea8e6dc77a82bbcafddd93e5127af97cdd0b294322a4eeb4",
+    "meaning": "published before the first run; the files can be revealed afterwards and re-hashed to show nothing was altered between participants. A hash commitment is evidence of immutability, not disclosure."
+  },
+  "record_per_run": [
+    "model identity and version",
+    "accepted / rejected / indeterminate attempts",
+    "attempts marked invalid or incomplete, with the reason",
+    "rollback proofs (begin and final fingerprints per attempt)",
+    "correction execution tool calls",
+    "participant observation tool calls",
+    "total participant-facing calls",
+    "token usage where observable, otherwise self-reported or null",
+    "elapsed seconds",
+    "DAT Q0 and final vectors",
+    "hard invariants",
+    "shaded visual captures",
+    "manual interventions",
+    "structured stop reason and note"
+  ],
+  "comparison_rules": [
+    "identical budget, tools, DAT policy and references for every model",
+    "epsilon and tolerances are never tuned per model",
+    "if a real DAT metric defect is found, stop the comparison, fix it with an independent regression test, version the benchmark and restart affected runs \u2014 never patch mid-comparison",
+    "no scalar overall quality score is produced",
+    "a participant that has read hidden benchmark material, or that built RoboVision, is recorded as non-independent"
+  ],
+  "files": {
+    "CHALLENGE.md": "sha256:c29158e667f9e429df8eae4364326e0a089f65257efa5fe247cd5907268850dc",
+    "brief.json": "sha256:c53bd308deaf85383e6c659ed98dee71bfa6271f6c74b706f9a4e60dde02ce47",
+    "reference-front.png": "sha256:0dbe7ef3be189f3f41375c2057feede60908f8de035be4ef5c4dd1fbcb7552f1",
+    "reference-side.png": "sha256:5cd502b2960cf54c03c9523ccbc23b8a8b3d9ae50bb7f4409049d4cb899f98d7"
+  }
+}

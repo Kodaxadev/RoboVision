@@ -1,0 +1,117 @@
+{
+  "name": "orbital relay mast",
+  "subjects": [
+    "Base",
+    "Bracket_0",
+    "Bracket_1",
+    "Bracket_2",
+    "Bracket_3",
+    "Bracket_4",
+    "Counterweight",
+    "Cowl",
+    "Mast"
+  ],
+  "references": [
+    {
+      "key": "front",
+      "path": "reference-front.png",
+      "view": "v017",
+      "frame": {
+        "center": [
+          0.01952669,
+          0.0,
+          -0.014567479
+        ],
+        "radius": 0.547827865
+      },
+      "content": "projected geometric occupancy",
+      "subjects": [
+        "b3d:32bf5816-9208-473b-bd2b-9adac11ed9ba",
+        "b3d:44b6e5a6-a2d8-42a1-8394-80c62261f843",
+        "b3d:464ada9d-f0dd-459a-93e1-10f193cd4840",
+        "b3d:49f370c8-239d-45d6-b20c-dca74d5674aa",
+        "b3d:526f7153-55af-4145-8807-c9c7e7710e1b",
+        "b3d:75a809ab-f4bc-4a47-b6c5-d88318843a84",
+        "b3d:a99868ba-6d65-44c4-81a5-79d25956b2f7",
+        "b3d:e5977f00-4213-45e6-8791-664c8bc1d6c1",
+        "b3d:f86af55f-bfea-43aa-b069-eea7c1661193"
+      ],
+      "occupied_fraction": 0.102402
+    },
+    {
+      "key": "side",
+      "path": "reference-side.png",
+      "view": "v041",
+      "frame": {
+        "center": [
+          0.01952669,
+          0.0,
+          -0.014567479
+        ],
+        "radius": 0.547827865
+      },
+      "content": "projected geometric occupancy",
+      "subjects": [
+        "b3d:32bf5816-9208-473b-bd2b-9adac11ed9ba",
+        "b3d:44b6e5a6-a2d8-42a1-8394-80c62261f843",
+        "b3d:464ada9d-f0dd-459a-93e1-10f193cd4840",
+        "b3d:49f370c8-239d-45d6-b20c-dca74d5674aa",
+        "b3d:526f7153-55af-4145-8807-c9c7e7710e1b",
+        "b3d:75a809ab-f4bc-4a47-b6c5-d88318843a84",
+        "b3d:a99868ba-6d65-44c4-81a5-79d25956b2f7",
+        "b3d:e5977f00-4213-45e6-8791-664c8bc1d6c1",
+        "b3d:f86af55f-bfea-43aa-b069-eea7c1661193"
+      ],
+      "occupied_fraction": 0.10907
+    }
+  ],
+  "patterns": [
+    {
+      "key": "brackets",
+      "params": {
+        "members_prefix": "Bracket_",
+        "kind": "radial",
+        "count": 5,
+        "axis": "z",
+        "center": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "spacing": 72.0,
+        "spacing_tolerance": 0.75,
+        "orientation_tolerance": 1.5,
+        "dimension_variance": 0.02
+      }
+    }
+  ],
+  "protected_objects": [],
+  "required_invariants": [
+    "geometry.manifold",
+    "geometry.no_degenerate_faces",
+    "geometry.normals_consistent",
+    "geometry.no_unintended_open_boundaries",
+    "geometry.no_self_intersection"
+  ],
+  "max_dimension": 0.95,
+  "envelope": {
+    "width": 0.52,
+    "depth": 0.52,
+    "height": 0.86
+  },
+  "requirements": [
+    "overall envelope approximately 0.52 x 0.52 x 0.86 metres (w x d x h)",
+    "exactly 5 identical brackets arranged radially about +Z at 72 degree pitch, all at one common radius, one common height, and all sharing one orientation (they are not turned to face outward)",
+    "a single vertical mast rising from a square base plate",
+    "one canted cowl at the top of the mast",
+    "one counterweight mass offset on -Y",
+    "closed, manifold, consistently wound geometry, with no self-intersection within any single part"
+  ],
+  "possible_faults": [
+    "a bracket may sit at the wrong angle around the array",
+    "a bracket may sit at the wrong radius from the axis",
+    "the mast may be the wrong thickness",
+    "the counterweight may be displaced"
+  ],
+  "notes": "The references are the projected geometric occupancy of the intended asset, captured before any fault was applied, in the frame recorded with each. They carry no shading, materials or lighting. Unlike v1 these are achievable: a fully corrected asset agrees with them almost exactly. The asset's internal proportions are stated nowhere and must be read from the references and the measurements."
+}

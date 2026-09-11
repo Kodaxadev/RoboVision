@@ -73,6 +73,50 @@ def private_dir() -> Path:
     return Path(raw)
 
 
+# The evaluator's own fields, exposed as computed. Nothing is paraphrased or
+# summarised: the point of v3a is to change what the participant is told, and a
+# harness that rewrote the evaluator's findings into friendlier prose would be
+# changing a second thing at the same time.
+FAILURE_FIELDS = ("reject_causes", "indeterminate_causes",
+                  "targets_achieved", "invariants_checked")
+
+
+def participant_result(record: dict, *, n: int, budget: int, evidence: dict,
+                       return_causes: bool) -> dict:
+    """What `submit_correction` hands back to the participant.
+
+    v2 returned the decision, the targets achieved and the epsilon audit, and
+    never the causes of a rejection. `CHALLENGE.md` had promised "you try again
+    with the evidence from the failure", so the loop was missing its negative
+    feedback channel: a participant could see what had worked in a rejected
+    candidate but not why the candidate was refused. Both clean v2 participants
+    were shaped by that.
+
+    `return_causes` adds the evaluator's record under `evaluation`, **including
+    indeterminate causes when a reject cause outranked them for the decision** —
+    a participant that listed an invariant as a protected metric must learn so
+    even in an attempt that was rejected for something else.
+
+    The v2 shape is otherwise untouched, and v2 keeps it: the flag comes from the
+    benchmark's own manifest, so a v2 run stays reproducible exactly as built.
+    """
+    evaluation = record["evaluation"]
+    result = {
+        "attempt": record["attempt"],
+        "n": n, "budget": budget,
+        "decision": evaluation["decision"],
+        "outcome": record["outcome"],
+        "restored": record["restored"],
+        "targets_achieved": evaluation["targets_achieved"],
+        "epsilon_audit": record["epsilon_audit"],
+        "evidence": evidence,
+    }
+    if return_causes:
+        result["evaluation"] = {field: evaluation.get(field, [])
+                                for field in FAILURE_FIELDS}
+    return result
+
+
 class Runner:
     """One benchmark, one model, one run directory."""
 
@@ -117,7 +161,11 @@ class Runner:
         disclosed = self.manifest.get("a0_construction_disclosed")
         if disclosed:
             return json.loads((self.package / "a0.json").read_text(encoding="utf-8"))
-        path = private_dir() / self.package.name / "restore.json"
+        # A benchmark derived from another reuses its answer key by name rather
+        # than holding a copy: two copies of a sealed recipe are two things that
+        # can drift, and only one of them is covered by the published hash.
+        material = self.manifest.get("private_material", self.package.name)
+        path = private_dir() / material / "restore.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
     def _brief_json(self) -> dict:
@@ -238,16 +286,11 @@ class Runner:
         record = run_correction(self.session, trajectory.brief, correction, trajectory)
         if len(trajectory.attempts) >= budget:
             self.stop("budget_exhausted", "the harness ended the run")
-        return {
-            "attempt": record["attempt"],
-            "n": len(trajectory.attempts), "budget": budget,
-            "decision": record["evaluation"]["decision"],
-            "outcome": record["outcome"],
-            "restored": record["restored"],
-            "targets_achieved": record["evaluation"]["targets_achieved"],
-            "epsilon_audit": record["epsilon_audit"],
-            "evidence": self.observe(label="packet-latest"),
-        }
+        return participant_result(
+            record, n=len(trajectory.attempts), budget=budget,
+            evidence=self.observe(label="packet-latest"),
+            return_causes=bool(
+                (self.manifest.get("harness") or {}).get("return_failure_causes")))
 
     def stop(self, reason: str, note: str = "") -> dict:
         if reason not in STOP_REASONS:

@@ -478,7 +478,122 @@ The A/B question is worth more than the fix:
 
 Either answer is worth more than the repair.
 
-### The v3 interface changes, recorded and not yet built
+### What v2 actually tested
+
+v2 did not fully implement the interaction it claimed to test. `CHALLENGE.md`
+promised the evidence from each failure, and the closed correction loop was
+missing its negative-feedback channel entirely: the evaluator computed why every
+candidate failed, and the harness never delivered it. So v2 is best read as an
+accidental ablation —
+
+> autonomous 3D correction when the model can see evidence of success but cannot
+> see why a rejected correction failed.
+
+Under that condition, the findings separate cleanly:
+
+- **Transfer and perception: strong evidence.** Four reasoning clients, two of
+  them clean, localised the `Bracket_1` angular fault; one clean model chose the
+  minimum-change radius on its first attempt.
+- **Execution safety: very strong evidence.** Five rollbacks for Participant 1,
+  eight for Participant 2, with Participant 2's final vector exactly equal to Q0 —
+  organic agent mistakes, not injected faults.
+- **Verification: strong evidence.** Configurations that dramatically improved
+  individual numbers, front excess included, also regressed protected reference
+  dimensions, and the vector evaluator refused every one rather than letting one
+  metric pay for another.
+- **Adaptive reasoning: not properly tested.** The models were denied the
+  failure explanations the contract promised them.
+
+The headline is therefore not "1 of 6, 0 of 8". It is that both independent
+models found genuine 3D faults through a restricted interface, the verifier kept
+every bad or unproven candidate out of the asset, and the experiment exposed that
+the adaptive loop had been withholding its own feedback.
+
+### The sequence from here: one variable at a time
+
+Every change below is plausibly good. Shipping them together would destroy the
+ability to answer the question v2 has made most important: **how much capability
+was hidden solely because the model was not told why it failed?** So they ship as
+separate, ordered ablations against the same asset, Q0, references, prompt,
+budget and tool surface.
+
+**v3a — failure feedback only.** Built:
+`benchmarks/correction-transfer-v3-feedback/`, benchmark id
+`rvbench:correction-transfer/v3-feedback`. `submit_correction` additionally returns
+an `evaluation` block holding the evaluator's existing `reject_causes`,
+`indeterminate_causes`, `targets_achieved` and `invariants_checked`, exposed as
+computed with no paraphrase — and **indeterminate causes are returned even when a
+reject cause decided the outcome**, which is precisely what Participant 2 needed
+eight times. `targets_achieved` in a rejected attempt is not relabelled; beside
+`outcome: rolled_back`, the full evaluation should speak for itself, and adding an
+interpretation would be a second change.
+
+The change is gated on the benchmark's own manifest
+(`harness.return_failure_causes`), so v2 keeps its original behaviour and its
+runs stay reproducible exactly as built. Proved live over the real stdio shim with
+a probe that authors nothing:
+
+```
+correction-transfer-v2            evaluation: NOT RETURNED
+correction-transfer-v3-feedback   reject_causes:        insufficient_target_improvement / pattern.spacing_max_error
+                                  indeterminate_causes: protected_metric_missing / geometry.manifold
+                                  scene unchanged after probe in both
+```
+
+Carried from v2 unchanged and checked: the normalized A0 signature, the Q0
+vector, the hidden commitments, the budget, the known limits, the required
+invariants, and the digest of every participant file. The answer key is v2's,
+reused by name (`private_material`) rather than copied, so there is still exactly
+one sealed recipe and it is still the one the published hash covers.
+
+Two ablation caveats, disclosed rather than engineered away:
+
+- `CHALLENGE.md` is byte-identical to v2's, **including its v2 heading**. It
+  already promised the feedback, so v3a is the harness keeping a promise the
+  document had made. The cost is a participant file naming the wrong version.
+- The participant-facing `MANIFEST.json` honestly records the harness change, so
+  a v3a participant that reads it is told to expect failure causes. v2
+  participants were told the same by `CHALLENGE.md`, so both conditions were
+  promised the feedback and only delivery differs — but the manifest line is a
+  small additional prime, and it is noted here rather than hidden by an
+  incomplete manifest.
+
+Fresh MiMo and Nemotron contexts run v3a — new sessions, not the v2
+conversations, same model versions where available. Sampling variance between
+fresh runs means this is not a high-powered controlled experiment, but the
+qualitative behaviour answers specific questions:
+
+- **Participant 1's model:** does `target_metric_missing` lead it to inspect the
+  certificates and find `reference.macro.excess_fraction` itself? If it still
+  cannot, canonical namespace legibility genuinely needs v3b.
+- **Participant 2's model:** after an attempt-1 equivalent it would now see the
+  pattern target met, both reference targets short of an epsilon set too high,
+  `geometry.manifold` not a metric, and the scene restored. Resubmitting the
+  bracket repair alone would be direct evidence that missing feedback, not 3D
+  reasoning, suppressed its v2 performance. Abandoning the correct radius even
+  with the causes in hand would mean credit assignment is a real model or
+  interface problem.
+
+**v3b — contract legibility, only after v3a.** Canonical metric identifiers
+carried in the packet beside the friendly fields; invariants separated from
+targetable and protectable metrics; missing-metric errors that list the
+certificate's valid metrics and a conservative near-name suggestion, with no
+fuzzy auto-correction.
+
+**v3c — attribution, only if still needed.** Per-operation credit assignment in a
+rejected bundle, and image-space discrepancy attributed back to the responsible
+object and a world-space direction. Deferred deliberately: per-operation
+attribution needs intermediate measurements and is causally ambiguous when edits
+interact, and ordinary failure feedback may make it unnecessary — a model told
+why a bundle failed may simply start submitting one hypothesis per correction,
+which is the behaviour the loop was designed for.
+
+**Separately, after those:** make the resolution rule real, accepting against
+`max(declared epsilon, known metric resolution)` so "below resolution is
+unproven" is enforced rather than audited. It changes no v2 outcome, but it is a
+change to acceptance and gets its own version.
+
+### The original v3 list, kept for the record
 
 0. **Return the rejection reasons.** `submit_correction` must return
    `reject_causes` and `indeterminate_causes`, and indeterminate causes must not be
