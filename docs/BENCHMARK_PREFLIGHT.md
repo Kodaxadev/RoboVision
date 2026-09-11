@@ -215,6 +215,36 @@ five million times the noise floor, and the one rejection was rejected for
 achieving 0.0 against a required 0.001. No attempt's outcome differs under the
 stricter rule.
 
+### Where the responsibility actually sits
+
+The participant made the immediate mistake. But calling it a typo understates
+what the system did to earn it.
+
+The discrepancy packet — which `CHALLENGE.md` names as the participant's primary
+evidence — presents friendly display fields (`excess_fraction`,
+`max_spacing_error`) while the evaluator requires canonical identifiers
+(`reference.macro.excess_fraction`, `pattern.spacing_max_error`). The resolution
+table confirms the canonical names are the real contract. RoboVision therefore
+handed the agent a namespace translation problem that it had no need to create,
+and then reported the failure in terms that did not point at it.
+
+Attempt 1 is the same shape. The evaluator was right to refuse protected metrics
+that do not exist, but its missing-metric branches offer none of the corrective
+guidance the ambiguity branches beside them already do. Two cheap messages would
+have closed both failures:
+
+```
+geometry.manifold is an invariant, not a metric. It is already enforced
+by required_invariants and must not be repeated under protected.
+```
+
+```
+Unknown metric reference.excess_fraction in ref:front. Available:
+reference.macro.excess_fraction, reference.macro.deficit_fraction, ...
+```
+
+Neither helps a model solve the asset. Both make the protocol self-describing.
+
 ### Classification
 
 > **Clean transfer demonstrated, partial success.** One independently diagnosed
@@ -260,12 +290,87 @@ now three reasoning clients, one of them with no access to anything, agreeing
 that the radial-pattern discrepancy is legible from the evidence alone.
 
 The divergence after that is the more useful half. Unlimited offline evaluation
-solved everything; both live runs solved one. The clean run's remaining barrier
-was **not** 3D reasoning — it had diagnosed the counterweight displacement and
-the `Bracket_0` radius correctly, and said so in its stop note. It could not
-address them because it could not name the metrics.
+solved everything; both live runs solved one.
 
-So the provisional bottleneck is **agent-legibility of the evidence contract**,
-not spatial reasoning. That is a considerably more actionable finding than a
-model that simply could not see the faults, and it is exactly the class of thing
-an independent-model test existed to uncover.
+The supported statement about the clean run is narrower than it is tempting to
+make it:
+
+> The observed failure was dominated by evidence-contract legibility rather than
+> by failure to localise the remaining geometric faults.
+
+It named the counterweight displacement and the `Bracket_0` radius in its stop
+note, which is good evidence that perception and localisation worked. But those
+attempts died on invalid metric identifiers **before any measurement was taken**,
+so whether its specific geometric corrections would have succeeded was never
+established. "The barrier was not spatial reasoning" is a stronger claim than the
+evidence supports, and is not made here.
+
+What can be said is that the bottleneck observed was in the language for
+describing the world rather than in seeing it — and that is a considerably more
+actionable finding than a model that could not see the faults at all.
+
+
+## What v2 has already proven
+
+A claim that could not be made before Participant 1:
+
+> A clean, previously unfamiliar frontier model used only RoboVision's restricted
+> public interface to inspect a 3D asset, independently identify a real spatial
+> defect, generate an appropriate typed correction, have it quantitatively
+> verified and committed, survive five unsuccessful attempts with exact rollback,
+> preserve all hard geometry invariants, and stop autonomously.
+
+That is not "AI can autonomously make professional 3D assets". It is evidence
+that the core thesis holds at the first level: 3D correction competence transfers
+through RoboVision to a model that did not build RoboVision. The failure is
+encouraging precisely because the model did not fail to see the world — it got
+tangled in our language for describing it, which is the easier problem.
+
+## Participant 2, then v3
+
+Participant 2 runs against **unchanged v2**. Fixing the interface first would buy
+a nicer run and lose the only direct comparison available, so the freeze holds.
+
+The A/B question is worth more than the fix:
+
+- if the second model discovers the canonical names unaided and addresses further
+  faults, Participant 1's failure was partly model-specific — the interface is
+  usable but not equally legible to every client;
+- if it independently reaches for `reference.excess_fraction` or something like
+  it, that is **cross-model evidence that the interface is defective** rather
+  than merely awkward.
+
+Either answer is worth more than the repair.
+
+### The v3 interface changes, recorded and not yet built
+
+1. **One canonical metric namespace everywhere.** The discrepancy packet should
+   carry the evaluator's exact identifier beside the friendly field, so an agent
+   can copy `metric` and `kind` straight into a correction:
+
+   ```json
+   {"excess_fraction": {"metric": "reference.macro.excess_fraction",
+                        "kind": "ref:front", "value": 0.139025,
+                        "resolution": 1.52587890625e-05,
+                        "direction": "lower_better"}}
+   ```
+
+2. **Machine-actionable missing-name errors.** `target_metric_missing` and
+   `protected_metric_missing` should return the certificate's valid metrics and a
+   conservative exact or near-name suggestion. No fuzzy auto-correction — the
+   participant resubmits deliberately, and the record shows it chose.
+
+3. **Invariants separated unmistakably** from metrics in the observation:
+   `required_invariants` (automatically enforced hard gates, never repeated under
+   `protected`), `targetable_metrics`, `protectable_metrics`.
+
+4. **Resolution semantics made real.** Today the evaluator decides and
+   `_epsilon_audit()` records afterwards. v3 should accept against
+   `max(declared epsilon, known metric resolution)`, so "below resolution is
+   unproven" becomes an invariant of the system rather than a sentence in a
+   document.
+
+Separately, and as analysis instrumentation rather than an agent capability: the
+facade should record *which* read methods a participant called, not only how
+many. Its absence is why this document can say what Participant 1 got wrong but
+not how it got the pattern name right.
