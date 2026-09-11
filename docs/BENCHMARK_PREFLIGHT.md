@@ -643,3 +643,117 @@ Separately, and as analysis instrumentation rather than an agent capability: the
 facade should record *which* read methods a participant called, not only how
 many. Its absence is why this document can say what Participant 1 got wrong but
 not how it got the pattern name right.
+
+## v3a result 1 — MiMo V2.5 Free, fresh context, failure causes returned
+
+Run identity `mimo-v2.5-v3a-01`, against `rvbench:correction-transfer/v3-feedback`.
+Same asset, Q0, references, prompt, tools and budget as its v2 run; a new session.
+
+**7 attempts / 2 accepted / 3 rejected / 2 indeterminate / 5 verified rollbacks /
+stopped `no_worthwhile_correction_remains`.** 150 correction-execution calls, 121
+observation calls, 271 total, 21.8s. No manual interventions. The operator's chat
+summary said three accepted; the harness records two, and so does the
+participant's own stop note.
+
+| MiMo | v2 — causes hidden | v3a — causes returned |
+| --- | --- | --- |
+| attempts | 6 | 7 |
+| accepted | 1 | **2** |
+| bracket angle fixed | yes | yes |
+| bracket radius retained | no | **yes** |
+| counterweight improvement retained | no | **yes** |
+| front `silhouette_iou` | 0.862899 | **0.913085** |
+| side `silhouette_iou` | 0.759896 | **0.764472** |
+| side `deficit_fraction` | 0.102966 | **0.085478** |
+| side `excess_fraction` | 0.180470 | 0.196279 (worse) |
+| `coverage.observed_fraction` | 0.915716 | **0.961591** |
+| hard invariants | pass | pass |
+
+### The two accepted attempts, exactly
+
+| metric | A0 | after attempt 3 (brackets) | after attempt 7 (counterweight) |
+| --- | --- | --- | --- |
+| `pattern.spacing_max_error` | 4.900687° | 0.000103° | 0.000103° |
+| front `silhouette_iou` | 0.862899 | 0.882969 | 0.913085 |
+| front `excess_fraction` | 0.139025 | 0.124274 | 0.088660 |
+| front `deficit_fraction` | 0.017136 | 0.007301 | 0.005960 |
+| side `silhouette_iou` | 0.757604 | 0.759896 | 0.764472 |
+| side `excess_fraction` | 0.182009 | 0.180470 | **0.196279** |
+| side `deficit_fraction` | 0.104505 | 0.102966 | 0.085478 |
+| coverage | 0.915716 | 0.915716 | 0.961591 |
+
+Attempt 3 moved Bracket_0 to r = 0.20449 — the four-member consensus — and
+Bracket_1 to 72°, and improved every reference metric it touched. Attempt 7 moved
+the counterweight and is where most of the front improvement came from.
+
+### The mechanism is in the record, not inferred from the score
+
+Two sequences show exactly the pattern v3a exists to test — failure returned,
+participant changes the offending claim, resubmission succeeds:
+
+**Attempts 1 → 2 → 3, brackets.** Attempt 1 had the right geometry (spacing
+4.9007° → 0.0158°) and went indeterminate: it targeted
+`pattern.spacing_matches_declared`, which is an invariant rather than a metric,
+and protected `geometry.manifold`. Attempt 2 refined the geometry to the exact
+consensus radius and went indeterminate again, on two misnamed targets
+(`reference[front].silhouette_iou`) and all five invariants listed as protected.
+Attempt 3 submitted **identical geometry** with only the one target that had been
+achieved, and was accepted.
+
+**Attempts 5 → 7, counterweight.** Attempt 5 moved the counterweight to
+(0, −0.18, −0.1), achieved a side-deficit improvement of 0.017488 against a
+declared epsilon of 0.02, and was rejected. Attempt 6 tried a different position
+and did worse. Attempt 7 resubmitted attempt 5's **identical geometry** with an
+epsilon of 0.01, and was accepted.
+
+In both, the geometry did not change between the failed and the accepted attempt;
+only the claims did. That is direct evidence that the geometry was right and the
+barrier was the correction contract.
+
+Canonical naming was learned, eventually. Attempts 1–2 used non-canonical names;
+attempt 3 avoided reference targets altogether; attempts 4–7 used
+`reference.macro.deficit_fraction` correctly. The first `target_metric_missing`
+it ever received for a reference metric arrived after attempt 2. How it then
+found the canonical name is not observable, because the facade still records how
+many observation calls a participant makes but not which.
+
+### Two cautions before calling this a clean win
+
+**The feedback taught it to drop protections, not to correct them.** After
+attempt 2's five `protected_metric_missing` causes it declared **no protections
+at all** for attempts 3–7. That removed the invariant confusion, and it also
+removed the reference protections it had declared in attempt 1. Attempt 7 then
+regressed side `excess_fraction` from 0.180470 to 0.196279, and nothing refused
+it, because nothing had been declared to protect it. Required invariants are
+enforced regardless and held throughout; the vector gate protects only what a
+participant chooses to declare. Net side agreement still improved (IoU up,
+deficit down more than excess rose), so this is a trade the contract permits, not
+a corruption — but it is a trade made by an agent that had just learned
+protections were the thing getting it refused. Whether untargeted reference
+metrics should carry a default protection is a design question for later, and is
+not built.
+
+**Attempt 7 set its epsilon after the fact.** With causes returned, a participant
+can see exactly how much an attempt achieved and resubmit the same edit claiming
+a little less. That is legitimate here: 0.017488 is roughly 1,146 times the
+metric's resolution of 1.526e-05, so it is a real, proven improvement, not the
+sub-resolution gaming the epsilon audit guards against. It does change what
+epsilon means — from a prediction to a calibrated claim, at the cost of an
+attempt — and the later resolution-gate change should be designed with this in
+mind.
+
+### What this supports
+
+For one model family, on the same asset, Q0, prompt, tools and budget, returning
+the evaluator's failure causes coincided with a large qualitative change: the
+correct bracket radius and a counterweight improvement were retained where
+neither was in v2. The two identical-geometry resubmissions make the mechanism
+visible. One stochastic rerun per condition does not establish that the whole
+numerical difference is caused by the feedback, and the gain came partly from the
+participant claiming less — dropping protections and calibrating an epsilon — as
+well as from correcting what it claimed.
+
+Participant 2's model runs v3a next, unchanged. Its v2 run found the right repair
+on attempt 1 and abandoned it; whether returned causes let it isolate and keep
+that edit is the replication that would make this more than one model's result.
+
