@@ -1075,3 +1075,93 @@ After v3b this fixture is retired as the basic correction-transfer benchmark. Mu
 reached front IoU 0.998 on it with budget left; the next benchmark should be
 designed for interacting faults, ambiguity, attribution and planning.
 
+## v3b result 1 — MiMo V2.5 Free, fresh context, canonical addresses in the packet
+
+Run identity `mimo-v2.5-v3b-01`. First `health` confirmed
+`v3b-legibility / mimo-v2.5-v3b-01 / attempts_used: 0 / stopped: false`.
+
+**8 attempts / 2 accepted / 6 rejected / 0 indeterminate / `budget_exhausted`.** 173
+correction-execution calls, 112 observation calls, 285 total.
+
+### The pre-registered measures
+
+| measure | MiMo v3a | MiMo v3b |
+| --- | --- | --- |
+| first attempt whose targets and protections all resolve | 3 | **1** |
+| `*_metric_missing` causes across the run | 9 | **0** |
+| submitted pairs not copied verbatim from a packet address | — | **none** |
+
+Every `{metric, kind}` pair it submitted, in every attempt, matches a packet address
+exactly. **All eight attempts reached real geometric evaluation.** That is the
+mechanistic result v3b exists to test, and it is unambiguous for this model: the
+namespace tax is gone.
+
+### Retained state
+
+| | A0 | final |
+| --- | --- | --- |
+| front `silhouette_iou` | 0.862899 | 0.911540 |
+| front excess / deficit | 0.139025 / 0.017136 | 0.073014 / 0.021904 |
+| side `silhouette_iou` | 0.757604 | 0.834738 |
+| side excess / deficit | 0.182009 / 0.104505 | 0.112339 / 0.071489 |
+| `pattern.spacing_max_error` | 4.900687° | 0.000832° |
+| coverage | 0.915716 | 0.969582 |
+| hard invariants | pass | pass |
+
+The side result is better than MiMo v3a's (0.764). That numerical difference is not
+attributed to v3b: these are fresh stochastic runs, one per condition. The causal
+evidence for v3b is the measures above.
+
+### The trajectory
+
+- **1 → 2, brackets.** Attempt 1 made the correct bracket repair and was measured.
+  It was rejected only because it asked front excess to improve by 0.02 and it
+  improved by 0.014751 — and the returned cause said exactly that. Attempt 2 kept
+  the geometry, asked for 0.01, and was accepted.
+- **3, mast and counterweight together.** Mast to 0.08 and counterweight Y to
+  −0.15. Front excess fell sharply, but the mast was too thin: front deficit
+  regressed past its protection, and the side target fell short. Rolled back.
+- **4, moderated.** Mast 0.10, counterweight Y −0.20. Accepted: side deficit
+  0.102966 → 0.071489, front excess 0.124274 → 0.073014.
+- **5, three variables at once.** Mast, counterweight Y and Z together; rejected,
+  and the participant attributed the failure to Z. Plausible, not established —
+  three things changed.
+- **6, one variable.** Counterweight Y alone to −0.28; clearly worse (side deficit
+  regressed, side IoU fell past its protection). Rolled back.
+- **7, Y and Y-scale together.** Rejected on both targets.
+- **8, the counterweight's X offset.** It noticed the +X offset contradicts the
+  brief's offset on −Y and set X to 0. Front excess improved by 0.033825 against a
+  requested 0.01 — **that target passed**. The attempt was rejected solely because it
+  also required `reference.contour.mean_distance` to improve by 0.001, and it improved
+  by 0.000971. A correction that met its main target was discarded by an extra claim.
+
+**On attempt 8's cause, precisely.** The participant's closing reasoning says it
+was rejected because the epsilon was below the metric's resolution. The recorded
+reject cause is `insufficient_target_improvement` — 0.000971 against a declared
+0.001. Resolution did not decide it. The epsilon audit does show that both the
+declared epsilon and the achieved change were below the contour metric's resolution
+(0.002762): the audit flagged it, and did not gate it. That is the outstanding
+mismatch between `CHALLENGE.md`'s wording and the implementation, now met
+organically by a participant.
+
+**The participant's cowl theory** — that the residual may involve "the cowl or other
+geometric features not captured by the fault model" — is preserved as its belief and
+is not a finding. The public brief names the possible faults as bracket angle,
+bracket radius, mast thickness and counterweight displacement; the counterweight
+displacement was simply not fully localised within the budget.
+
+### What it shows
+
+With the protocol out of the way, MiMo's errors became **3D hypothesis design and
+experimental attribution**: bundled edits whose effects could not be separated
+(attempts 3, 5, 7), and bundled acceptance claims that turned a real improvement
+into a rejection (attempt 8). The all-or-nothing vector gate did exactly what it was
+told each time; the model made its own contracts harder to satisfy than they needed
+to be.
+
+MiMo did not become Muse — 2 of 8 accepted against Muse's 8 of 8 on v3a, with
+front / side IoU 0.912 / 0.835 against 0.998 / 0.967. With the interface friction
+removed for this model, the benchmark is increasingly measuring reasoning quality
+rather than API trivia. Nemotron's v3b run is the replication that matters: in v3a
+it was almost entirely blocked by name discovery.
+
