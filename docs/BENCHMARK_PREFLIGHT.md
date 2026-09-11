@@ -806,7 +806,92 @@ None of these touch evaluation or feedback, so they do not confound the v3a
 ablation. Item 5 is the one participant-visible addition; MiMo v3a ran without it,
 and it names a run rather than carrying any evidence about the asset.
 
-Nemotron's v3a run takes place under a new identity, `nemotron-3-ultra-v3a-02`, in a
-new context and a new participant folder, with OpenCode Desktop fully quit
-beforehand. `nemotron-3-ultra-v3a-01` is retired unused.
+*As planned at the time:* Nemotron's v3a run was to take place under
+`nemotron-3-ultra-v3a-02` in a new folder. **It did not** — the session was
+launched from the older folder and ran as `nemotron-3-ultra-v3a-01`. Why that run
+is still valid is set out under *v3a result 2*, below; `-02` was retired unused.
+
+## v3a result 2 — Nemotron 3 Ultra Free, fresh context, failure causes returned
+
+**Which run this is.** It ran as `nemotron-3-ultra-v3a-01`, launched from the older
+folder `D:\RVBench-Nemotron-02`, not the `-02` identity and `-03` folder prepared
+after the incident. It is still a valid v3a run, and every condition was checked
+rather than assumed: the transcript carries no trace of the earlier misrouted
+session; its first `health` reported `attempts_used: 0, stopped: false`; the shim
+bound to the scene before serving, and the session's first observation is
+identical to the frozen Q0; and before finalizing, the scene was bound to the run's
+last recorded state. The deviation is in the run's name, not in its conditions.
+
+**7 attempts / 0 accepted / 7 indeterminate (one invalid) / every candidate
+restored / stopped `evidence_insufficient` with one slot unused.** 141
+correction-execution calls, 91 observation calls, 232 total. The retained state
+equals A0 exactly.
+
+Attempt 1 is invalid: its `advisory` field was malformed, the evaluator refused it
+*after* the bracket mutations had been delivered, and the fail-closed path rolled
+them back — the second time that machinery has fired on an organic participant
+error rather than an injected one.
+
+### The feedback worked, and was not enough
+
+After attempt 2 it received eleven `*_metric_missing` causes, and from then on
+**every attempt changed the identifiers** — the returned causes were read and acted
+on. It cycled through every plausible namespace except the right one:
+
+| attempt | pattern target tried | reference target tried |
+| --- | --- | --- |
+| 2 | `max_spacing_error` | `excess_fraction` |
+| 3 | `max_spacing_error` | `silhouette_iou` |
+| 4 | `pattern[brackets].max_spacing_error` | `reference[front].excess_fraction` |
+| 5 | `pattern.max_spacing_error` | `reference.excess_fraction` |
+| 6 | `brackets.max_spacing_error` | `front.excess_fraction` |
+| 7 | `pattern.brackets.max_spacing_error` | `reference.front.excess_fraction` |
+| canonical | `pattern.spacing_max_error` | `reference.macro.excess_fraction` |
+
+Each was correctly refused as missing. It submitted the same bracket repair every
+time, and because no target ever resolved, **that repair was never measured** — so
+this run establishes nothing either way about its geometry. (Its v2 run measured the
+same repair improving every metric it touched.)
+
+### Both the interface and the model contributed
+
+Its stop note says the naming convention was not discoverable. That is too strong.
+`CHALLENGE.md`'s own example uses `reference.macro.excess_fraction` and
+`pattern.spacing_max_error`. The transcript mentions the first **18 times** and the
+second twice, and it submitted neither. So:
+
+> RoboVision made the canonical namespace unnecessarily hard to map from its
+> primary evidence, and the participant failed to use the one explicit canonical
+> example it had.
+
+The pattern case shows how unnecessary the difficulty is. The packet displays
+`max_spacing_error`; the evaluator wants `spacing_max_error` — the same words in the
+other order. None of its six guesses tried reordering, and nothing it could see
+suggested it should.
+
+## v3a, both models
+
+| | v2 — causes hidden | v3a — causes returned |
+| --- | --- | --- |
+| **MiMo** | 1 accepted; bracket angle retained | **2 accepted**; bracket angle and radius, and a counterweight improvement retained |
+| **Nemotron** | 0 accepted; correct first repair abandoned after an unexplained rejection | 0 accepted; causes read and acted on, canonical names never found |
+
+(The operator's summaries have twice given MiMo v3a three accepted attempts. The
+harness records two, attempts 3 and 7, and so does the participant's own note.)
+
+Returning failure causes is **valuable but not universally sufficient**. MiMo turned
+them into retained corrections. Nemotron consumed them correctly — its behaviour
+changed on every attempt because of them — but "that name does not exist" does not
+say which name does. Nemotron's failure moved from credit assignment in v2 to naming
+in v3a, and the bottleneck it now sits at is more basic than attribution: whether a
+model can address the measurement it is looking at.
+
+Two models, one run each per condition. These are qualitative findings, not effect
+sizes.
+
+**v3a is complete.** The next ablation is **v3b — canonical metric addresses in the
+evidence**, changing nothing else: every participant-facing metric carries the exact
+`{metric, kind}` a correction must name, beside its friendly field, so that what a
+model reads is what it can submit. Whether invariant/metric separation belongs in the
+same ablation or waits for its own is still open.
 
