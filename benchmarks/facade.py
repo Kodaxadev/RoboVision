@@ -121,7 +121,15 @@ class BenchmarkFacade:
         return response
 
     def health(self) -> dict[str, Any]:
-        return self.call("system.health")
+        response = self.call("system.health")
+        identity = getattr(self._runner, "identity", None)
+        if identity is not None:
+            # Beside the host's report, never inside it: the host's readiness
+            # and this benchmark run's identity are separate layers, and it was
+            # exactly their being conflated — "begin_correction: ready" while the
+            # run was sealed — that made the 2026-09-10 misroute hard to read.
+            response = {**response, "benchmark_run": identity()}
+        return response
 
     def schema(self, method: str) -> dict[str, Any]:
         """The exact parameters of any operation, including mutating ones.

@@ -757,3 +757,56 @@ Participant 2's model runs v3a next, unchanged. Its v2 run found the right repai
 on attempt 1 and abandoned it; whether returned causes let it isolate and keep
 that edit is the replication that would make this more than one model's result.
 
+## Incident — participant sessions routed to the wrong run (2026-09-10)
+
+The first Nemotron v3a session is **not a result**. Every `submit_correction` came
+back `RUN_STOPPED no_worthwhile_correction_remains` — the stop reason of the
+already-finished MiMo v3a run, not anything of Nemotron's.
+
+**Cause.** OpenCode Desktop launched a new `rvbench` shim for each participant and
+never stopped the old ones; four were live at once under one server name, so the
+routing of `rvbench_*` calls among them was undefined. Every participant folder's
+`opencode.json` was correct. The Nemotron session was served by the stale MiMo v3a
+shim.
+
+**What it touched.** A read-only audit of every run against its own finalized
+report found two:
+
+- the finished **MiMo v3a** run: observations added to its counter, `packet.json`
+  rewritten, and — because `stop` did not check whether a run was already stopped —
+  its sealed stop reason and note **overwritten** with the Nemotron session's. No
+  attempt was added and the scene was never mutated; the scene was verified to be
+  exactly A0 afterwards.
+- the finished **v2 MiMo** run: MiMo v3a's own session opened with about 10
+  observation calls through the stale v2 shim, 33 seconds before its correct shim
+  started.
+
+**MiMo v3a stands.** The evidence the stale v2 shim returned was identical to its
+own Q0 — same scene at the same moment, byte-identical brief — and its first
+attempt began eight minutes after its correct shim was up; all seven attempts carry
+the v3a-only evaluation fields. Its observation count is undercounted by about 10,
+recorded rather than edited into a finalized report. No v2 result changes.
+
+**Records.** As-found copies with hashes, a repair log restoring each touched file
+to its own finalized report's value, and no finalized report modified:
+`artifacts/benchmark/correction-transfer-v3-feedback/INCIDENT-2026-09-10-run-identity/`.
+
+**Fixes.** Transactions were strict; the run lifecycle around them was not.
+
+1. A stopped run is immutable — a second `stop` changes nothing.
+2. A used run identity cannot be restored over; a new experiment needs a new id.
+3. A shim refuses to serve a finished run, and binds to the scene before serving:
+   the editor must hold exactly the state that run left behind — A0 by normalized
+   signature before any attempt, the last attempt's authored fingerprint after.
+4. Every correction re-checks that binding before any transaction opens.
+5. `health` carries a non-secret `benchmark_run` identity beside the host's report,
+   so a misrouted session can see it at once.
+
+None of these touch evaluation or feedback, so they do not confound the v3a
+ablation. Item 5 is the one participant-visible addition; MiMo v3a ran without it,
+and it names a run rather than carrying any evidence about the asset.
+
+Nemotron's v3a run takes place under a new identity, `nemotron-3-ultra-v3a-02`, in a
+new context and a new participant folder, with OpenCode Desktop fully quit
+beforehand. `nemotron-3-ultra-v3a-01` is retired unused.
+

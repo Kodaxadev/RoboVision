@@ -34,6 +34,8 @@ sys.path.insert(0, str(ROOT))
 from benchmarks.signature import collect, differences, signature  # noqa: E402
 from robovision.artist_loop import Brief, advisory_ranking, measure, packet  # noqa: E402
 from benchmarks.report import finalize, vector  # noqa: E402
+from benchmarks.results import (  # noqa: E402,F401 - re-exported
+    FAILURE_FIELDS, LIFECYCLE_FILES, expected_state, participant_result)
 from robovision.artist_loop_run import (  # noqa: E402
     Correction, Trajectory, run_correction)
 from robovision.session import HostSession  # noqa: E402
@@ -71,50 +73,6 @@ def private_dir() -> Path:
             "for a blind benchmark live outside this repository; point it at that "
             "directory.")
     return Path(raw)
-
-
-# The evaluator's own fields, exposed as computed. Nothing is paraphrased or
-# summarised: the point of v3a is to change what the participant is told, and a
-# harness that rewrote the evaluator's findings into friendlier prose would be
-# changing a second thing at the same time.
-FAILURE_FIELDS = ("reject_causes", "indeterminate_causes",
-                  "targets_achieved", "invariants_checked")
-
-
-def participant_result(record: dict, *, n: int, budget: int, evidence: dict,
-                       return_causes: bool) -> dict:
-    """What `submit_correction` hands back to the participant.
-
-    v2 returned the decision, the targets achieved and the epsilon audit, and
-    never the causes of a rejection. `CHALLENGE.md` had promised "you try again
-    with the evidence from the failure", so the loop was missing its negative
-    feedback channel: a participant could see what had worked in a rejected
-    candidate but not why the candidate was refused. Both clean v2 participants
-    were shaped by that.
-
-    `return_causes` adds the evaluator's record under `evaluation`, **including
-    indeterminate causes when a reject cause outranked them for the decision** —
-    a participant that listed an invariant as a protected metric must learn so
-    even in an attempt that was rejected for something else.
-
-    The v2 shape is otherwise untouched, and v2 keeps it: the flag comes from the
-    benchmark's own manifest, so a v2 run stays reproducible exactly as built.
-    """
-    evaluation = record["evaluation"]
-    result = {
-        "attempt": record["attempt"],
-        "n": n, "budget": budget,
-        "decision": evaluation["decision"],
-        "outcome": record["outcome"],
-        "restored": record["restored"],
-        "targets_achieved": evaluation["targets_achieved"],
-        "epsilon_audit": record["epsilon_audit"],
-        "evidence": evidence,
-    }
-    if return_causes:
-        result["evaluation"] = {field: evaluation.get(field, [])
-                                for field in FAILURE_FIELDS}
-    return result
 
 
 class Runner:
@@ -183,6 +141,14 @@ class Runner:
                      max_dimension=raw.get("max_dimension"), notes=raw.get("notes", ""))
 
     def restore(self) -> dict:
+        # A run identity names one experiment. Restoring over one that already
+        # holds attempts, a stop or a final report would put a fresh A0 under a
+        # record describing something else. A new experiment gets a new run id.
+        used = [name for name in LIFECYCLE_FILES if (self.root / name).is_file()]
+        if used:
+            raise SystemExit(
+                f"RUN_ID_IN_USE {self.root.name}: already holds {', '.join(used)}. "
+                f"A new experiment needs a new run identity.")
         spec = self._spec()
         for obj in _result(self.session.call("scene.describe"))["objects"]:
             self.session.call("object.delete", {"object": obj["name"]})
@@ -265,10 +231,57 @@ class Runner:
             trajectory.stop_reason = prior.get("summary", {}).get("stop_reason")
         return trajectory
 
+    def identity(self) -> dict:
+        """Which experiment this process is serving. Not secret, and not a pin.
+
+        Returned to the participant with `health` so a misrouted session is
+        visible at once — the 2026-09-10 incident was a participant calling a
+        shim that belonged to a different, finished run, and nothing in any
+        response said so.
+        """
+        trajectory = self.trajectory()
+        return {"benchmark": self.manifest["benchmark"], "run": self.root.name,
+                "attempts_used": len(trajectory.attempts),
+                "stopped": trajectory.stop_reason is not None}
+
+    def expected_scene(self) -> dict:
+        """What the editor must currently hold for this run to continue."""
+        return expected_state(self.trajectory().attempts,
+                              self.manifest.get("normalized_a0_signature"))
+
+    def bind(self) -> dict:
+        """Refuse to act on a scene that is not this run's.
+
+        One Blender scene serves every run in turn. Nothing previously checked
+        that the scene a run was about to act on was the one that run had left
+        — only that a restore file existed. A shim started for one run while
+        the scene held another's state would have evaluated corrections against
+        the wrong asset and recorded them under the wrong identity.
+        """
+        expected = self.expected_scene()
+        if expected["kind"] == "unknown":
+            raise SystemExit(f"SCENE_BINDING_UNKNOWN {self.root.name}: "
+                             f"{expected['reason']}")
+        if expected["kind"] == "signature":
+            actual = signature(self.session)
+        else:
+            actual = _result(self.session.call(
+                "scene.snapshot", {"level": "deep"}))["fingerprint"]
+        if actual != expected["value"]:
+            raise SystemExit(
+                f"SCENE_NOT_BOUND_TO_RUN {self.root.name}: the editor does not "
+                f"hold this run's current state ({expected['kind']} expected "
+                f"{expected['value']}, found {actual}). Another run may have "
+                f"used the scene since.")
+        return {"bound": True, **expected}
+
     def attempt(self, raw: dict) -> dict:
         trajectory = self.trajectory()
         if trajectory.stop_reason:
             raise SystemExit(f"RUN_STOPPED {trajectory.stop_reason}")
+        # Checked before the budget and before any transaction: a correction
+        # evaluated against another run's scene is worse than no correction.
+        self.bind()
         budget = int(self.manifest["budget"]["max_attempts"])
         if len(trajectory.attempts) >= budget:
             # Refused rather than warned: an attempt past the budget would still
@@ -297,6 +310,13 @@ class Runner:
             raise SystemExit(f"UNKNOWN_STOP_REASON {reason}; "
                              f"one of {sorted(STOP_REASONS)}")
         trajectory = self.trajectory()
+        # A stopped run is immutable. This was not enforced: a second stop simply
+        # overwrote the first, and on 2026-09-10 a participant session misrouted
+        # to a finished run replaced that run's sealed stop reason and note with
+        # its own. `attempt` already refused a stopped run; `stop` now does too,
+        # and says what the original reason was rather than changing it.
+        if trajectory.stop_reason:
+            raise SystemExit(f"RUN_STOPPED {trajectory.stop_reason}")
         trajectory.stop_reason = reason
         trajectory.write()
         (self.root / "stop.json").write_text(

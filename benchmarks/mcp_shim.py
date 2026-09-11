@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -302,7 +303,24 @@ def main() -> int:
         log(f"the restored asset does not match the frozen benchmark: {report}")
         return 2
 
-    log(f"rvbench shim ready: {args.benchmark} / {args.model} on "
+    # A finished run is never served. On 2026-09-10 a desktop client kept an
+    # old shim alive for a completed run and routed a new participant to it;
+    # that participant then rewrote the finished run's stop record. A shim for
+    # a stopped or finalized run now refuses to start at all.
+    finished = [name for name in ("stop.json", "report.json")
+                if (runner.root / name).is_file()]
+    if finished:
+        log(f"run {args.model} is finished ({', '.join(finished)} present); "
+            f"refusing to serve it. A new experiment needs a new run identity.")
+        return 2
+    try:
+        bound = runner.bind()
+    except SystemExit as exc:
+        log(str(exc))
+        return 2
+
+    log(f"rvbench shim ready: {args.benchmark} / {args.model} "
+        f"[pid {os.getpid()}, scene bound by {bound['kind']}] on "
         f"{args.host}:{args.port}; tools="
         f"{', '.join(tool['name'] for tool in TOOLS)}")
     try:
