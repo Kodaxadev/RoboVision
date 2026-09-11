@@ -895,3 +895,111 @@ evidence**, changing nothing else: every participant-facing metric carries the e
 model reads is what it can submit. Whether invariant/metric separation belongs in the
 same ablation or waits for its own is still open.
 
+## v3a result 3 — Muse, fresh isolated context
+
+**Classification: fresh isolated Muse v3a diagnostic; same model family previously
+used in the source-assisted preflight** (Preflight A). Recorded before the run. This
+session had no prior conversation, repository, web, shell or hints, and its first
+`health` confirmed `muse-v3a-clean-01` with `attempts_used: 0, stopped: false`.
+
+**8 attempts / 8 accepted / 0 rejected / 0 indeterminate / `budget_exhausted`.**
+The harness ended the run after the eighth accepted attempt; the participant never
+called `stop`, and attempt 8 was still improving side deficit by 0.020 — so the
+budget, not the evidence, was the binding limit. 169 correction-execution calls, 169
+observation calls, 338 total.
+
+| attempt | edit | target | before → after |
+| --- | --- | --- | --- |
+| 1 | Bracket_0 to r = 0.204486, Bracket_1 to 72° | `pattern.spacing_max_error` | 4.900687° → 0.000004° |
+| 2 | counterweight X 0.031 → 0 | front `reference.macro.excess_fraction` | 0.124274 → 0.086574 |
+| 3 | mast width → 0.10 | front excess | 0.086574 → 0.039189 |
+| 4 | counterweight Y/Z | side excess | 0.117236 → 0.099468 |
+| 5 | mast width → 0.09 | front excess | 0.032931 → 0.007152 |
+| 6 | counterweight raised | side deficit | 0.062535 → 0.049245 |
+| 7 | counterweight further −Y | side deficit | 0.049245 → 0.034135 |
+| 8 | counterweight further −Y | side deficit | 0.034135 → 0.013990 |
+
+| | A0 | final |
+| --- | --- | --- |
+| front `silhouette_iou` | 0.862899 | **0.997619** |
+| side `silhouette_iou` | 0.757604 | **0.967467** |
+| front excess / deficit | 0.139025 / 0.017136 | 0.001192 / 0.001192 |
+| side excess / deficit | 0.182009 / 0.104505 | 0.019166 / 0.013990 |
+| coverage | 0.915716 | 0.977791 |
+| hard invariants | pass | pass |
+
+Every improvement cleared its metric's resolution by orders of magnitude.
+
+### v3a's variable never engaged
+
+**No attempt returned a reject or indeterminate cause.** The one thing v3a changes —
+returning failure causes — never took part in this trajectory. So this run is not
+evidence that failure feedback helped. It is evidence of something else:
+
+> the existing RoboVision interface was already sufficient for a capable reasoning
+> client to find the geometry, find the metric contract, attribute error to
+> individual objects, and get every correction it proposed verified and committed.
+
+Its manifest did name the ablation, so it could have read that feedback was
+available; it never received any, because it never failed.
+
+### How it avoided Nemotron's failure
+
+Per the transcript — the facade still counts observation calls without recording
+which — it did not rely on the flattened discrepancy packet. It called the truth
+tools directly. `truth.pattern` returns the certificate metric
+`pattern.spacing_max_error` and the actual gap sequence (76.90, 67.10, 72.00, 72.00,
+72.00), and `truth.reference` returns `reference.macro.*`. It submitted those names
+from attempt 1.
+
+So the canonical namespace is **discoverable** through the composable interface,
+and badly surfaced by the primary packet. That sharpens Nemotron's result: it did not
+only need a better error message; it did not exploit the measurement tools that let
+Muse resolve the ambiguity itself.
+
+It also did its own 2D-to-3D attribution: `truth.reference` run on object subsets —
+mast alone, counterweight alone, mast with counterweight — to decide which object was
+responsible for which silhouette discrepancy. The attribution subsystem listed as v3c
+is therefore **not needed yet**; the existing primitives were enough for a strong
+client.
+
+### Not answer replay, on the available evidence
+
+The trajectory is closed-loop: the mast went to 0.10, was measured, then to 0.09; the
+counterweight took four measured steps. The operator reports that Preflight A's
+counterweight was near (0, −0.168, −0.193), where this run arrived iteratively at
+(0, −0.155, −0.190). That comparison is the operator's, against a contaminated
+preflight, and not against the sealed answer key, which has not been read. The
+sandbox also held: the transcript shows OpenCode denying the participant's attempts
+to read images from a directory outside its folder.
+
+### A new policy concern
+
+Attempts 1–6 declared **no protections**. An accepted correction could have improved
+its target while regressing an undeclared DAT dimension, provided invariants and
+locality held. Muse improved everything, so nothing went wrong, and by attempts 7–8 it
+protected front excess and deficit while working on the side view. MiMo's v3a run
+dropped protections too, and there an undeclared metric did regress. Two of three v3a
+clients accepted corrections with nothing declared to protect.
+
+Recorded for later, **not for v3b**: a **retained-evidence guard** — optionally
+refuse a correction that materially regresses previously established high-confidence
+truth unless the participant explicitly authorises the trade.
+
+## v3a, all three models
+
+| | outcome | where it ended |
+| --- | --- | --- |
+| **MiMo** | 2 accepted | used returned causes to keep corrections v2 lost |
+| **Nemotron** | 0 accepted | read the causes, never found the canonical names |
+| **Muse** | **8 accepted** | never failed, so never needed the causes; used the truth tools directly |
+
+The same fixed tool surface produced radically different outcomes depending on how
+well the model used the measurement primitives. The bridge is no longer obviously the
+bottleneck. Muse ran the whole intended loop — inspect, hypothesise, isolate evidence,
+make a typed edit, verify, commit, inspect the residual — eight times in a row.
+
+**v3b is still worth building, for a different reason than before.** Not because
+RoboVision requires it — Muse shows it does not — but to measure how far closing an
+unnecessary legibility gap raises MiMo and Nemotron toward what Muse already did.
+
